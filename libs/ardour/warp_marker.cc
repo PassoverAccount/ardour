@@ -260,7 +260,10 @@ WarpMap::set_state (XMLNode const& node, int version)
 		}
 	}
 
-	/* Ensure sorted order (the XML should already be in order, but be safe) */
+	/* Ensure sorted order.  The XML should already be in sorted order
+	 * (we always write it that way), but we sort here defensively to
+	 * maintain the class invariant that _markers is always sorted by
+	 * beat_pos — which is relied upon by the binary-search helpers. */
 	sort (_markers.begin (), _markers.end ());
 
 	return 0;

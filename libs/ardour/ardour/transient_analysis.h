@@ -107,9 +107,11 @@ class LIBARDOUR_API TransientAnalysisCache {
 
 	mutable PBD::RWLock                        _lock;
 	std::map<PBD::ID, SourceResults>           _cache;
-	std::atomic<bool>                          _stop;
+	std::shared_ptr<std::atomic<bool>>         _stop;
 
-	void run_analysis (std::shared_ptr<AudioSource> source, float sample_rate);
+	void run_analysis (std::shared_ptr<AudioSource> source,
+	                   float                         sample_rate,
+	                   std::shared_ptr<std::atomic<bool>> stop_flag);
 };
 
 } /* namespace ARDOUR */

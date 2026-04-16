@@ -17,10 +17,11 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <memory>
+#include <thread>
 
-#include "pbd/pthread_utils.h"
 #include "pbd/rwlock.h"
 
 #include "ardour/audiosource.h"
@@ -38,13 +39,15 @@ using namespace PBD;
  * ====================================================================== */
 
 TransientAnalysisCache::TransientAnalysisCache ()
-	: _stop (false)
+	: _stop (std::make_shared<std::atomic<bool>> (false))
 {
 }
 
 TransientAnalysisCache::~TransientAnalysisCache ()
 {
-	_stop.store (true);
+	/* Signal all in-flight analysis threads to stop.  The shared_ptr
+	 * keeps the atomic alive even after this object is destroyed. */
+	_stop->store (true);
 }
 
 void
@@ -63,19 +66,21 @@ TransientAnalysisCache::schedule_analysis (shared_ptr<AudioSource> source,
 	}
 
 	/* Run the detection on a pool thread so we never block the RT thread.
-	 * We capture by value because the Source may outlive this call. */
-	auto id = source->id ();
-
-	PBD::Thread::create ([this, source, sample_rate] () {
-		run_analysis (source, sample_rate);
-	}, "warp-transient-analysis");
+	 * We capture stop_flag by value (shared_ptr) so it remains valid even
+	 * if the TransientAnalysisCache is destroyed before the thread finishes. */
+	auto stop_flag = _stop;
+	std::thread t ([this, source, sample_rate, stop_flag] () {
+		run_analysis (source, sample_rate, stop_flag);
+	});
+	t.detach ();
 }
 
 void
 TransientAnalysisCache::run_analysis (shared_ptr<AudioSource> source,
-                                      float                   sample_rate)
+                                      float                   sample_rate,
+                                      shared_ptr<atomic<bool>> stop_flag)
 {
-	if (_stop.load ()) {
+	if (stop_flag->load ()) {
 		return;
 	}
 
@@ -84,7 +89,7 @@ TransientAnalysisCache::run_analysis (shared_ptr<AudioSource> source,
 	results.channels.resize (nchans);
 
 	for (uint32_t c = 0; c < nchans; ++c) {
-		if (_stop.load ()) {
+		if (stop_flag->load ()) {
 			return;
 		}
 
@@ -100,6 +105,12 @@ TransientAnalysisCache::run_analysis (shared_ptr<AudioSource> source,
 		} else {
 			TransientDetector::cleanup_transients (feats, sample_rate, 3.0f);
 		}
+	}
+
+	/* Do not access `this` after stop_flag is set — the cache may be gone.
+	 * Check once more before touching any member data. */
+	if (stop_flag->load ()) {
+		return;
 	}
 
 	{

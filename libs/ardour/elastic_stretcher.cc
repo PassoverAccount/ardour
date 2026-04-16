@@ -247,7 +247,7 @@ ElasticStretcher::process_stretch (double           beat_pos,
 
 	int    avail        = _stretcher->available ();
 	if (avail < 0) {
-		error << _("ElasticStretcher: RubberBand not configured") << endmsg;
+		error << _("ElasticStretcher: RubberBand stretcher not initialized. Ensure build_stretcher() was called before processing.") << endmsg;
 		return 0;
 	}
 
@@ -390,7 +390,7 @@ ElasticStretcher::apply_crossfade (float** output, pframes_t nframes)
 
 	for (pframes_t i = 0; i < xlen; ++i) {
 		const float t        = (float) i / (float) CROSSFADE_LEN;
-		const float fade_in  = t * t;                            /* sine² */
+		const float fade_in  = t * t;            /* quadratic (equal-power approximation) */
 		const float fade_out = 1.f - fade_in;
 
 		for (uint32_t c = 0; c < _nchannels; ++c) {

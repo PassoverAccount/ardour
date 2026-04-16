@@ -24,6 +24,7 @@
 #include <ytkmm/menuitem.h>
 #include <ytkmm/uimanager.h>
 
+#include "gtkmm2ext/gui_thread.h"
 #include "gtkmm2ext/utils.h"
 
 #include "ardour/audioregion.h"
@@ -189,10 +190,10 @@ WarpEditor::rebuild_peaks ()
 	if (total <= 0) { return; }
 
 	/* Sample the raw audio data at (w) evenly-spaced positions */
+	const Sample* ch = _trigger->audio_data (0);
 	for (int px = 0; px < w; ++px) {
-		const double   frac   = (double) px / (double) (w - 1);
+		const double   frac   = (w > 1) ? ((double) px / (double) (w - 1)) : 0.0;
 		const samplepos_t idx = (samplepos_t) (frac * (double) (total - 1));
-		const Sample* ch = _trigger->audio_data (0);
 		if (ch) {
 			_peaks_min[px] = ch[idx];
 			_peaks_max[px] = ch[idx];
