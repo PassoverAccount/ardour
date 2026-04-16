@@ -58,6 +58,8 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	, _beat_spinner (_beat_adjustment)
 	, _stretch_toggle (ArdourButton::led_default_elements)
 	, _abpm_label  (ArdourButton::Text)
+	, _warp_toggle (ArdourButton::led_default_elements)
+	, _warp_edit_button (ArdourButton::Text)
 	, _ignore_changes (false)
 {
 	Gtk::Label* label;
@@ -113,6 +115,32 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 
 	eTempoBox->show_all();
 
+	/* ------- Tempo Warp / Elastic Sync ----------------------------- */
+	Gtk::Table* warp_table = manage (new Gtk::Table ());
+	warp_table->set_homogeneous (false);
+	warp_table->set_spacings (4);
+	warp_table->set_border_width (8);
+
+	int wrow = 0;
+	_warp_toggle.set_text (_("Warp"));
+	warp_table->attach (_warp_toggle,        0, 1, wrow, wrow + 1, Gtk::FILL, Gtk::SHRINK);
+	warp_table->attach (_warp_mode_selector, 1, 3, wrow, wrow + 1, Gtk::FILL, Gtk::SHRINK);
+	_warp_edit_button.set_text (_("Edit Markers"));
+	warp_table->attach (_warp_edit_button,   3, 4, wrow, wrow + 1, Gtk::FILL, Gtk::SHRINK);
+	wrow++;
+
+	/* Inline warp editor (waveform + marker view) */
+	warp_table->attach (_warp_editor, 0, 4, wrow, wrow + 1,
+	                    Gtk::EXPAND | Gtk::FILL, Gtk::EXPAND | Gtk::FILL);
+	wrow++;
+
+	ArdourWidgets::Frame* eWarpBox = manage (new ArdourWidgets::Frame);
+	eWarpBox->set_label (_("Tempo Warp"));
+	eWarpBox->set_name ("EditorDark");
+	eWarpBox->set_edge_color (0x000000ff);
+	eWarpBox->add (*warp_table);
+	eWarpBox->show_all ();
+
 	/* -------------- Clip start&length (redundant with the trimmer gui handles?)  ----------*/
 	row = 0;
 
@@ -133,8 +161,9 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	_table.set_border_width (2);
 
 	attach (*eTempoBox,    0,1, 0,1, Gtk::FILL, Gtk::EXPAND | Gtk::FILL);
+	attach (*eWarpBox,     0,1, 1,2, Gtk::FILL, Gtk::EXPAND | Gtk::FILL);
 #if 0
-	attach (_table,        0,1, 1,2, Gtk::FILL, Gtk::SHRINK);
+	attach (_table,        0,1, 2,3, Gtk::FILL, Gtk::SHRINK);
 #endif
 
 	_start_clock.ValueChanged.connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::start_clock_changed));
@@ -151,6 +180,26 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 
 	_stretch_toggle.signal_clicked.connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::toggle_stretch));
 
+	/* Warp mode selector */
+	using WarpMode = ARDOUR::WarpMode;
+	_warp_mode_selector.set_text (ARDOUR::warp_mode_to_string (WarpMode::Complex));
+	_warp_mode_selector.set_name ("generic button");
+	_warp_mode_selector.add_menu_elem (MenuElem (ARDOUR::warp_mode_to_string (WarpMode::Beats),
+	    sigc::bind (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::set_warp_mode), WarpMode::Beats)));
+	_warp_mode_selector.add_menu_elem (MenuElem (ARDOUR::warp_mode_to_string (WarpMode::Tones),
+	    sigc::bind (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::set_warp_mode), WarpMode::Tones)));
+	_warp_mode_selector.add_menu_elem (MenuElem (ARDOUR::warp_mode_to_string (WarpMode::Texture),
+	    sigc::bind (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::set_warp_mode), WarpMode::Texture)));
+	_warp_mode_selector.add_menu_elem (MenuElem (ARDOUR::warp_mode_to_string (WarpMode::RePitch),
+	    sigc::bind (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::set_warp_mode), WarpMode::RePitch)));
+	_warp_mode_selector.add_menu_elem (MenuElem (ARDOUR::warp_mode_to_string (WarpMode::Complex),
+	    sigc::bind (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::set_warp_mode), WarpMode::Complex)));
+	_warp_mode_selector.add_menu_elem (MenuElem (ARDOUR::warp_mode_to_string (WarpMode::ComplexPro),
+	    sigc::bind (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::set_warp_mode), WarpMode::ComplexPro)));
+
+	_warp_toggle.signal_clicked.connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::toggle_warp));
+	_warp_edit_button.signal_clicked.connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::show_warp_editor));
+
 	_beat_spinner.set_can_focus(false);
 	_beat_spinner.signal_changed ().connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::beats_changed));
 
@@ -159,6 +208,9 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	set_tooltip(_beat_spinner, _("Length of the clip, in beats. Changing this will change the tempo"));
 	set_tooltip(_half_button, _("Click to halve the tempo for the clip. This will result in it playing faster when stretched on the timeline"));
 	set_tooltip(_dbl_button, _("Click to double the tempo for the clip. This will result in it playing slower when stretched on the timeline"));
+	set_tooltip(_warp_toggle, _("<b>If enabled</b>, per-clip warp markers will be used for non-uniform time-stretching that tracks session tempo changes"));
+	set_tooltip(_warp_mode_selector, _("Select the warp algorithm quality and character"));
+	set_tooltip(_warp_edit_button, _("Open the warp marker editor to add, move and remove markers"));
 }
 
 AudioTriggerPropertiesBox::~AudioTriggerPropertiesBox ()
@@ -199,6 +251,7 @@ void
 AudioTriggerPropertiesBox::set_session (Session* s)
 {
 	SessionHandlePtr::set_session (s);
+	_warp_editor.set_session (s);
 
 	if (!s) {
 		return;
@@ -261,10 +314,20 @@ AudioTriggerPropertiesBox::on_trigger_changed (const PBD::PropertyChange& pc)
 		_stretch_toggle.set_active (at->stretchable () ? Gtkmm2ext::ExplicitActive : Gtkmm2ext::Off);
 		_stretch_selector.set_text(stretch_mode_to_string(at->stretch_mode ()));
 		set_sensitivities = true;
+
+		/* Sync warp UI */
+		_warp_toggle.set_active (at->warp_enabled () ? Gtkmm2ext::ExplicitActive : Gtkmm2ext::Off);
+		_warp_mode_selector.set_text (ARDOUR::warp_mode_to_string (at->warp_mode ()));
+		_warp_mode_selector.set_sensitive (at->warp_enabled ());
+		_warp_edit_button.set_sensitive (at->warp_enabled ());
+
+		/* Pass the trigger's raw pointer to the warp editor */
+		_warp_editor.set_trigger (at.get ());
 	}
 
 	if (set_sensitivities) {
 		_stretch_toggle.set_sensitive(!at->active());
+		_warp_toggle.set_sensitive (!at->active ());
 
 		/* set remaining widget sensitivity based on stretchable button state & running state */
 		bool stretch_widgets_sensitive = at->stretchable () && !at->active();
@@ -293,6 +356,34 @@ AudioTriggerPropertiesBox::on_trigger_changed (const PBD::PropertyChange& pc)
 	}
 
 	_ignore_changes = false;
+}
+
+void
+AudioTriggerPropertiesBox::toggle_warp ()
+{
+	TriggerPtr trigger (tref.trigger());
+	std::shared_ptr<AudioTrigger> at = std::dynamic_pointer_cast<AudioTrigger> (trigger);
+	if (at) {
+		at->set_warp_enabled (!at->warp_enabled ());
+	}
+}
+
+void
+AudioTriggerPropertiesBox::set_warp_mode (ARDOUR::WarpMode wm)
+{
+	TriggerPtr trigger (tref.trigger());
+	std::shared_ptr<AudioTrigger> at = std::dynamic_pointer_cast<AudioTrigger> (trigger);
+	if (at) {
+		at->set_warp_mode (wm);
+		_warp_mode_selector.set_text (ARDOUR::warp_mode_to_string (wm));
+	}
+}
+
+void
+AudioTriggerPropertiesBox::show_warp_editor ()
+{
+	/* Scroll into view / expand the inline warp editor */
+	_warp_editor.show ();
 }
 
 void

@@ -36,6 +36,7 @@
 #include "ardour/interthread_info.h"
 #include "ardour/logcurve.h"
 #include "ardour/region.h"
+#include "ardour/warp_marker.h"
 
 class XMLNode;
 class AudioRegionReadTest;
@@ -205,6 +206,10 @@ class LIBARDOUR_API AudioRegion : public Region, public AudioReadable
 	void get_transients (AnalysisFeatureList&);
 	void update_transient (samplepos_t old_position, samplepos_t new_position);
 
+	/* Tempo Warp: per-region warp marker map */
+	WarpMap const& warp_map () const                { return _warp_map; }
+	void           set_warp_map (WarpMap const& wm) { _warp_map = wm; }
+
 	AudioIntervalResult find_silence (Sample, samplecnt_t, samplecnt_t, InterThreadInfo&) const;
 
   private:
@@ -281,6 +286,8 @@ class LIBARDOUR_API AudioRegion : public Region, public AudioReadable
 	mutable samplepos_t          _cache_end;
 	mutable samplecnt_t          _cache_tail;
 	mutable std::atomic<bool>    _invalidated;
+
+	WarpMap _warp_map; /* per-region warp markers */
 
   protected:
 	/* default constructor for derived (compound) types */

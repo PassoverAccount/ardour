@@ -347,6 +347,7 @@ gtk2_ardour_sources = [
         'trigger_master.cc',
         'trigger_ui.cc',
         'triggerbox_ui.cc',
+        'warp_editor.cc',
         'ui_config.cc',
         'utils.cc',
         'varispeed_dialog.cc',
