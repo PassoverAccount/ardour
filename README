@@ -46,6 +46,12 @@ export LD_LIBRARY_PATH="$libs/tk/ydk-pixbuf:$libs/tk/ztk:$libs/tk/ydk:$libs/tk/y
 ./build/gtk2_ardour/ardour-9.2.576
 ```
 
+```bash
+TOP=.
+. build/gtk2_ardour/ardev_common_waf.sh
+"$EXECUTABLE"
+```
+
 ## TODO
 
 - Make BPM selector in top banner click draggable to change session tempo. Requires refactor of existing tempo map code to support real-time changes and per-clip overrides.
