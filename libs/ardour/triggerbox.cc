@@ -21,6 +21,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <vector>
 
@@ -257,6 +258,10 @@ Trigger::Trigger (uint32_t n, TriggerBox& b)
 	, _segment_tempo (0.)
 	, _beatcnt (0.)
 	, _meter (4, 4)
+	, _warp_enabled (false)
+	, _warp_mode (WarpMode::Complex)
+	, _pitch_shift (0.0)
+	, _reverse (false)
 	, expected_end_sample (0)
 	, _pending (nullptr)
 	, last_property_generation (0)
@@ -381,7 +386,12 @@ Trigger::get_ui_state (Trigger::UIState &state) const
 
 	/* tempo is currently not a property */
 	state.tempo = segment_tempo();
-}
+
+	/* Tempo Warp / Elastic Sync */
+	state.warp_enabled = _warp_enabled;
+	state.warp_mode    = _warp_mode;
+	state.warp_map     = _warp_map;
+	state.pitch_shift  = _pitch_shift;
 
 void
 Trigger::set_ui_state (Trigger::UIState &state)
@@ -396,7 +406,13 @@ Trigger::set_ui_state (Trigger::UIState &state)
 	if (state.tempo > 0) {
 		set_segment_tempo(state.tempo);
 	}
-}
+
+	/* Tempo Warp: also apply immediately (not queued) since warp state
+	 * needs to be consistent when setup_stretcher() runs */
+	_warp_enabled = state.warp_enabled;
+	_warp_mode    = state.warp_mode;
+	_warp_map     = state.warp_map;
+	_pitch_shift  = state.pitch_shift;
 
 void
 Trigger::update_properties ()
@@ -432,6 +448,22 @@ Trigger::update_properties ()
 		 * and you can't d+d or create a new clip while it's playing, so I think it's OK */
 		if (_stretch_mode != old_stretch) {
 			setup_stretcher ();
+		}
+
+		/* Tempo Warp / Elastic Sync — applied from UIState */
+		const bool old_warp_enabled = _warp_enabled;
+		const WarpMode old_warp_mode = _warp_mode;
+		const double old_pitch_shift = _pitch_shift;
+		_warp_enabled = ui_state.warp_enabled;
+		_warp_mode    = ui_state.warp_mode;
+		_warp_map     = ui_state.warp_map;
+		_pitch_shift  = ui_state.pitch_shift;
+		_reverse      = ui_state.reverse;
+		if (_warp_enabled != old_warp_enabled || _warp_mode != old_warp_mode) {
+			setup_stretcher ();
+		}
+		if (_pitch_shift != old_pitch_shift && _elastic_stretcher) {
+			_elastic_stretcher->set_pitch_shift (_pitch_shift);
 		}
 
 		/* during construction of a new trigger, the ui_state.name is initialized and queued
@@ -489,6 +521,13 @@ Trigger::copy_to_ui_state ()
 			ui_state.patch_change[i] = _patch_change[i];
 		}
 	}
+
+	/* Tempo Warp */
+	ui_state.warp_enabled = _warp_enabled;
+	ui_state.warp_mode    = _warp_mode;
+	ui_state.warp_map     = _warp_map;
+	ui_state.pitch_shift  = _pitch_shift;
+	ui_state.reverse      = _reverse;
 }
 
 void
@@ -1485,6 +1524,7 @@ AudioTrigger::AudioData::append (Sample const * src, samplecnt_t cnt, uint32_t c
 AudioTrigger::AudioTrigger (uint32_t n, TriggerBox& b)
 	: Trigger (n, b)
 	, _stretcher (nullptr)
+	, _elastic_stretcher (nullptr)
 	, read_index (0)
 	, last_readable_sample (0)
 	, _legato_offset (0)
@@ -1499,6 +1539,7 @@ AudioTrigger::~AudioTrigger ()
 {
 	data.drop ();
 	delete _stretcher;
+	delete _elastic_stretcher;
 }
 
 Sample const *
@@ -1584,6 +1625,162 @@ AudioTrigger::stretching() const
 	return (_segment_tempo != .0) && _stretchable;
 }
 
+/* ---- Tempo Warp / Elastic Sync setters --------------------------------- */
+
+/* Shared transient analysis cache — created once, lives for the process lifetime. */
+TransientAnalysisCache* AudioTrigger::_transient_cache = nullptr;
+static std::once_flag s_transient_cache_once;
+
+void
+AudioTrigger::set_warp_enabled (bool yn)
+{
+	if (_warp_enabled == yn) {
+		return;
+	}
+	_warp_enabled = yn;
+	if (_warp_enabled) {
+		setup_stretcher (); /* (re)builds _elastic_stretcher */
+	}
+	copy_to_ui_state ();
+	send_property_change (Properties::stretchable); /* reuse existing property change for repaint */
+	_box.session().set_dirty ();
+}
+
+void
+AudioTrigger::set_warp_mode (WarpMode m)
+{
+	if (_warp_mode == m) {
+		return;
+	}
+	_warp_mode = m;
+	if (_warp_enabled && _elastic_stretcher) {
+		_elastic_stretcher->set_warp_mode (m);
+	}
+	copy_to_ui_state ();
+	_box.session().set_dirty ();
+}
+
+void
+AudioTrigger::set_warp_map (WarpMap const& m)
+{
+	_warp_map = m;
+	if (_warp_enabled && _elastic_stretcher) {
+		_elastic_stretcher->set_warp_map (&_warp_map);
+	}
+	copy_to_ui_state ();
+	_box.session().set_dirty ();
+}
+
+void
+AudioTrigger::set_pitch_shift (double semitones)
+{
+	semitones = std::max (-24.0, std::min (24.0, semitones));
+	if (_pitch_shift == semitones) {
+		return;
+	}
+	_pitch_shift = semitones;
+	if (_warp_enabled && _elastic_stretcher) {
+		_elastic_stretcher->set_pitch_shift (_pitch_shift);
+	}
+	copy_to_ui_state ();
+	send_property_change (Properties::stretchable);
+	_box.session().set_dirty ();
+}
+
+void
+AudioTrigger::set_reversed (bool yn)
+{
+	if (_reverse == yn) {
+		return;
+	}
+	_reverse = yn;
+	copy_to_ui_state ();
+	send_property_change (Properties::stretchable);
+	_box.session().set_dirty ();
+}
+
+void
+AudioTrigger::schedule_transient_analysis ()
+{
+	if (!_region) {
+		return;
+	}
+	std::shared_ptr<AudioRegion> ar = std::dynamic_pointer_cast<AudioRegion> (_region);
+	if (!ar) {
+		return;
+	}
+
+	std::call_once (s_transient_cache_once, [] {
+		_transient_cache = new TransientAnalysisCache ();
+	});
+
+	std::shared_ptr<AudioSource> src =
+	    std::dynamic_pointer_cast<AudioSource> (ar->source (0));
+	if (!src) {
+		return;
+	}
+
+	float sr = (float) _box.session().sample_rate ();
+
+	/* Connect to completion signal — emitted from a non-RT thread.
+	 * Use _analysis_connection (not region_connection) so we do not
+	 * accidentally disconnect the region PropertyChanged listener. */
+	PBD::ID expected_id = src->id ();
+	_transient_cache->AnalysisComplete.connect_same_thread (
+	    _analysis_connection,
+	    [this, expected_id] (PBD::ID completed_id) {
+		    if (completed_id == expected_id) {
+			    TransientAnalysisComplete (); /* EMIT SIGNAL */
+		    }
+	    });
+
+	_transient_cache->schedule_analysis (src, sr);
+}
+
+void
+AudioTrigger::auto_place_warp_markers ()
+{
+	if (!_region || _beatcnt <= 0.0) {
+		return;
+	}
+
+	std::shared_ptr<AudioRegion> ar = std::dynamic_pointer_cast<AudioRegion> (_region);
+	if (!ar) {
+		return;
+	}
+
+	if (!_transient_cache) {
+		return;
+	}
+
+	AnalysisFeatureList transients =
+	    _transient_cache->get_transients (ar->source (0)->id (), 0);
+
+	WarpMap new_map = TransientAnalysisCache::build_initial_warp_map (
+	    transients,
+	    (samplecnt_t) data.length,
+	    _beatcnt,
+	    _meter.divisions_per_bar (),
+	    (float) _box.session().sample_rate ());
+
+	set_warp_map (new_map);
+}
+
+AnalysisFeatureList
+AudioTrigger::get_transients () const
+{
+	if (!_region || !_transient_cache) {
+		return AnalysisFeatureList ();
+	}
+
+	std::shared_ptr<AudioRegion> ar = std::dynamic_pointer_cast<AudioRegion> (_region);
+	if (!ar) {
+		return AnalysisFeatureList ();
+	}
+
+	return _transient_cache->get_transients (ar->source (0)->id (), 0);
+}
+
 SegmentDescriptor
 AudioTrigger::get_segment_descriptor () const
 {
@@ -1619,6 +1816,15 @@ XMLNode&
 AudioTrigger::get_state () const
 {
 	XMLNode& node (Trigger::get_state());
+
+	node.set_property (X_("warp-enabled"), _warp_enabled);
+	node.set_property (X_("warp-mode"), warp_mode_to_string (_warp_mode));
+	node.set_property (X_("pitch-shift"), _pitch_shift);
+	node.set_property (X_("reverse"), _reverse);
+	if (!_warp_map.empty ()) {
+		node.add_child_nocopy (_warp_map.get_state ());
+	}
+
 	return node;
 }
 
@@ -1630,6 +1836,31 @@ AudioTrigger::set_state (const XMLNode& node, int version)
 	if (Trigger::set_state (node, version)) {
 		return -1;
 	}
+
+	bool warp_en = false;
+	node.get_property (X_("warp-enabled"), warp_en);
+	_warp_enabled = warp_en;
+
+	std::string wm_str;
+	if (node.get_property (X_("warp-mode"), wm_str)) {
+		WarpMode wm;
+		if (warp_mode_from_string (wm_str.c_str (), wm)) {
+			_warp_mode = wm;
+		}
+	}
+
+	XMLNode const* wmap_node = node.child (X_("WarpMap"));
+	if (wmap_node) {
+		_warp_map.set_state (*wmap_node, version);
+	}
+
+	double ps = 0.0;
+	node.get_property (X_("pitch-shift"), ps);
+	_pitch_shift = std::max (-24.0, std::min (24.0, ps));
+
+	bool rev = false;
+	node.get_property (X_("reverse"), rev);
+	_reverse = rev;
 
 	/* we've changed our internal values; we need to update our queued UIState or they will be lost when UIState is applied */
 	copy_to_ui_state ();
@@ -1871,6 +2102,10 @@ AudioTrigger::reset_stretcher ()
 	got_stretcher_padding = false;
 	to_pad = 0;
 	to_drop = 0;
+
+	if (_elastic_stretcher) {
+		_elastic_stretcher->reset ();
+	}
 }
 
 RubberBand::RubberBandStretcher*
@@ -1902,6 +2137,26 @@ AudioTrigger::setup_stretcher ()
 	delete _stretcher;
 	_stretcher = alloc_stretcher ();
 	_stretcher->setMaxProcessSize (rb_blocksize);
+
+	/* Also build / rebuild the ElasticStretcher when warp is enabled */
+	if (_warp_enabled) {
+		AudioTrack const* trk = static_cast<AudioTrack*> (_box.owner ());
+		if (trk) {
+			const uint32_t nchans = trk->input ()->n_ports ().n_audio ();
+			delete _elastic_stretcher;
+			_elastic_stretcher = new ElasticStretcher (
+			    _box.session ().sample_rate (),
+			    nchans,
+			    _warp_mode,
+			    _warp_map.empty () ? nullptr : &_warp_map);
+			if (_pitch_shift != 0.0) {
+				_elastic_stretcher->set_pitch_shift (_pitch_shift);
+			}
+			/* Pre-allocate RT pointer arrays */
+			_warp_in_ptrs.resize (nchans, nullptr);
+			_warp_out_ptrs.resize (nchans, nullptr);
+		}
+	}
 }
 
 void
@@ -2058,6 +2313,54 @@ AudioTrigger::audio_run (BufferSet& bufs, samplepos_t start_sample, samplepos_t 
 	}
 
 	/* tell the stretcher what we are doing for this ::run() call */
+
+	if (_warp_enabled && _elastic_stretcher && !_playout) {
+		/* ---- Tempo Warp / Elastic Sync path ---- */
+
+		/* Use pre-allocated pointer arrays — no heap allocation on the audio thread */
+		for (uint32_t chn = 0; chn < nchans; ++chn) {
+			_warp_in_ptrs[chn]  = data[chn % data.size ()];
+			_warp_out_ptrs[chn] = bufp[chn];
+		}
+
+		const double beat_pos = start.get_beats () + (start.get_ticks () / (double) Temporal::ticks_per_beat);
+		const bool   at_end   = (read_index >= last_readable_sample);
+
+		pframes_t written = _elastic_stretcher->process (
+		    beat_pos, bpm,
+		    _warp_in_ptrs.data (), data.length,
+		    read_index,
+		    nframes, _warp_out_ptrs.data (),
+		    at_end);
+
+		if (in_process_context && written > 0) {
+			for (uint32_t chn = 0; chn < bufs.count ().n_audio (); ++chn) {
+				uint32_t channel = chn % data.size ();
+				AudioBuffer& buf = bufs.get_audio (chn);
+
+				gain_t gain;
+				if (_velocity_effect) {
+					gain = (_velocity_effect * _velocity_gain) * _gain;
+				} else {
+					gain = _gain;
+				}
+
+				if (gain != 1.0f) {
+					buf.accumulate_with_gain_from (bufp[channel], written, gain, dest_offset);
+				} else {
+					buf.accumulate_from (bufp[channel], written, dest_offset);
+				}
+			}
+		}
+
+		process_index += written;
+
+		if (written < nframes || at_end) {
+			when_stopped_during_run (bufs, dest_offset);
+		}
+
+		return nframes;
+	}
 
 	if (do_stretch && !_playout) {
 

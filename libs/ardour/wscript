@@ -268,6 +268,7 @@ libardour_sources = [
         'thread_buffers.cc',
         'ticker.cc',
         'track.cc',
+        'transient_analysis_cache.cc',
         'transient_detector.cc',
         'transform.cc',
         'transport_fsm.cc',
@@ -275,6 +276,9 @@ libardour_sources = [
         'transport_master_manager.cc',
         'transpose.cc',
         'triggerbox.cc',
+        'elastic_stretcher.cc',
+        'warp_marker.cc',
+        'warp_mode.cc',
         'unknown_processor.cc',
         'user_bundle.cc',
         'utils.cc',
@@ -665,6 +669,7 @@ def build(bld):
             'test/mtdm_test.cc',
             'test/sha1_test.cc',
             'test/session_test.cc',
+            'test/warp_map_test.cc',
         ]
 
 # Tests that don't work

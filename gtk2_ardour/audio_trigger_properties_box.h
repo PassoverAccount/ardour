@@ -28,12 +28,14 @@
 #include "ardour/ardour.h"
 #include "ardour/session_handle.h"
 #include "ardour/triggerbox.h"
+#include "ardour/warp_mode.h"
 
 #include "widgets/ardour_button.h"
 #include "widgets/ardour_dropdown.h"
 
 #include "audio_clock.h"
 #include "trigger_ui.h"
+#include "warp_editor.h"
 
 class TriggerPropertiesBox : public Gtk::Table, public ARDOUR::SessionHandlePtr, public TriggerUI
 {
@@ -68,6 +70,13 @@ protected:
 
 	void beats_changed();
 
+	/* Tempo Warp controls */
+	void toggle_warp ();
+	void set_warp_mode (ARDOUR::WarpMode wm);
+	void show_warp_editor ();
+	void pitch_shift_changed ();
+	void toggle_reverse ();
+
 private:
 
 	void MultiplyTempo(float mult);
@@ -95,6 +104,21 @@ private:
 
 	ArdourWidgets::ArdourButton _half_button;
 	ArdourWidgets::ArdourButton _dbl_button;
+
+	/* Tempo Warp UI */
+	ArdourWidgets::ArdourButton   _warp_toggle;
+	ArdourWidgets::ArdourDropdown _warp_mode_selector;
+	ArdourWidgets::ArdourButton   _warp_edit_button;
+
+	/* Pitch shift controls */
+	Gtk::Label                    _pitch_label;
+	Gtk::Adjustment               _pitch_adjustment;
+	Gtk::SpinButton               _pitch_spinner;
+
+	/* Reverse toggle */
+	ArdourWidgets::ArdourButton   _reverse_toggle;
+
+	WarpEditor _warp_editor;
 
 	bool _ignore_changes;
 };

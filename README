@@ -3,3 +3,87 @@ Please see the Ardour website at https://ardour.org/ for all documentation.
 For information on building Ardour:
 
 https://ardour.org/development.html
+
+## Change log
+
+Implements Ableton-style per-clip warp markers for the Cue/Trigger system and AudioRegions. Each marker binds an audio sample position to a musical beat position; between adjacent markers, a local stretch ratio is computed and fed to RubberBandStretcher::setTimeRatio() per block, enabling non-uniform time-stretching that tracks session tempo map changes in real-time.
+
+Backend (libs/ardour/)
+WarpMarker / WarpMap — sorted (sample_pos, beat_pos) pairs with binary-search interpolation, per-segment stretch ratio math, and XML round-trip serialization:
+// ratio = (beat_delta × session_spb) / sample_delta
+double ratio = warp_map.stretch_ratio_at(beat_pos, sr * 60.0 / bpm);
+stretcher->setTimeRatio(ratio);
+WarpMode enum (Beats / Tones / Texture / Re-Pitch / Complex / ComplexPro) → RubberBandStretcher::Options mapping; Re-Pitch bypasses RubberBand entirely and changes the fractional read increment instead
+ElasticStretcher — wraps RubberBandStretcher with WarpMap-driven per-segment ratios, Re-Pitch linear-interpolation path, loop crossfade buffer, and start-padding latency management
+TransientAnalysisCache — async TransientDetector runs on a detached std::thread; uses shared_ptr<atomic<bool>> stop-flag so destruction never races with in-flight analysis; provides build_initial_warp_map() from detected onset positions
+Modified existing files
+triggerbox.h/cc: Trigger protected section + UIState gain _warp_enabled, _warp_mode, _warp_map; AudioTrigger gets _elastic_stretcher, warp setters, audio_run() branch, and get_state/set_state serialization. Warp is opt-in (_warp_enabled = false by default — zero overhead for existing sessions).
+audioregion.h/cc: AudioRegion gains a WarpMap property persisted in region XML
+UI (gtk2_ardour/)
+WarpEditor — Cairo-based waveform overview with draggable orange marker triangles, beat grid overlay, transient tick marks, scroll-to-zoom, and right-click context menu (delete / snap-to-transient)
+AudioTriggerPropertiesBox — new "Tempo Warp" frame with enable toggle, six-mode dropdown, and inline WarpEditor panel; syncs bidirectionally via the existing PropertyChanged / UIState mechanism
+Backward compatibility
+Sessions without <WarpMap> XML load normally. The legacy uniform-stretch path in audio_run() is completely unaffected when _warp_enabled is false.
+
+
+## Building
+
+```bash
+./waf clean
+./waf configure --strict --optimize --cxx17 --prefix=/opt/ardour   --with-backends=alsa,pulseaudio --lv2 --vst3 2>&1 | tee configure.log
+
+./waf -j1 2>&1 | tee build.log
+```
+
+## Running
+
+```bash
+TOP=..
+libs=$TOP/build/libs
+
+export LD_LIBRARY_PATH="$libs/tk/ydk-pixbuf:$libs/tk/ztk:$libs/tk/ydk:$libs/tk/ytk:$libs/tk/ztkmm:$libs/tk/ydkmm:$libs/tk/ytkmm:$libs/tk/suil:$libs/ptformat:$libs/qm-dsp:$libs/vamp-sdk:$libs/surfaces:$libs/ctrl-interface/control_protocol:$libs/ctrl-interface/midi_surface:$libs/ardour:$libs/midi++2:$libs/pbd:$libs/rubberband:$libs/soundtouch:$libs/aaf:$libs/gtkmm2ext:$libs/widgets:$libs/appleutility:$libs/taglib:$libs/evoral:$libs/evoral/src/libsmf:$libs/audiographer:$libs/temporal:$libs/libltc:$libs/canvas:$libs/waveview:$libs/ardouralsautil${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+./build/gtk2_ardour/ardour-9.2.576
+```
+
+```bash
+TOP=.
+. build/gtk2_ardour/ardev_common_waf.sh
+"$EXECUTABLE"
+```
+
+## TODO
+
+- Make BPM selector in top banner click draggable to change session tempo. Requires refactor of existing tempo map code to support real-time changes and per-clip overrides.
+- Add support for MIDI clip warping using a similar marker system. Requires design of a MIDI-specific WarpMap that accounts for note positions and velocities, and integration with the existing MIDI editing workflow.
+- Optimize stretch ratio calculations by caching results for recently used beat positions. Requires implementation of a small LRU cache within WarpMap, and benchmarking to ensure it provides a performance boost without excessive memory usage.
+
+## Warp / Stretch / Pitch Feature Summary
+
+The following features are fully implemented:
+
+### Stretch Options Panel (gtk2_ardour/)
+- **Stretch toggle** + mode selector (Crisp/Mixed/Smooth) for uniform time-stretch
+- **BPM display** with /2 and x2 tempo multiplier buttons
+- **Beat length** spinner for clip length in beats
+- **Warp toggle** + 6-mode dropdown (Beats/Tones/Texture/RePitch/Complex/ComplexPro)
+- **Edit Markers** button to expand the inline warp editor
+- **Pitch shift** spinner (±24 semitones, 0.5 step) — independent of time-stretch
+- **Reverse toggle** — reversed playback for clips
+- **Inline WarpEditor** — Cairo waveform with draggable markers, beat grid, transient ticks
+
+### WarpEditor Interactions
+- Double-click waveform → add marker
+- Drag markers horizontally → move beat position
+- Right-click → context menu (Delete / Snap to Transient / Save Preset / Load Preset)
+- Keyboard: Insert, Delete, Left/Right (nudge/pan), +/- (zoom), Ctrl+Z/Y (undo/redo)
+- Scroll wheel zoom, arrow-key panning
+- Stretch ratio overlay graph (orange curve with 1.0 baseline)
+
+### Backend (libs/ardour/)
+- **WarpMarker / WarpMap** — sorted (sample_pos, beat_pos) pairs with binary-search, per-segment ratio, XML serialization
+- **WarpMode** enum → RubberBand options mapping; RePitch bypasses RubberBand
+- **ElasticStretcher** — RT-safe wrapper with per-segment ratios, crossfade, independent pitch shift
+- **TransientAnalysisCache** — async transient detection with thread-safe stop flag
+- **Reverse property** on AudioTrigger — persisted in session XML
+- **WarpMap unit tests** — add/remove, ratio, source sample, serialization round-trip, segment lookup

@@ -33,6 +33,7 @@
 #include "widgets/ardour_spacer.h"
 
 #include "ardour/audio_track.h"
+#include "ardour/audiofilesource.h"
 #include "ardour/audioregion.h"
 #include "ardour/midi_region.h"
 #include "ardour/midi_track.h"
@@ -231,11 +232,9 @@ TriggerPage::use_own_window (bool and_fill_it)
 		win->signal_event ().connect (sigc::bind (sigc::ptr_fun (&Keyboard::catch_user_event_for_pre_dialog_focus), win));
 		set_widget_bindings (*win, *bindings, ARDOUR_BINDING_KEY);
 		update_title ();
-#if 0 // TODO
-		if (!win->get_focus()) {
-			win->set_focus (scroller);
+		if (!win->get_focus ()) {
+			win->set_focus (_strip_scroller);
 		}
-#endif
 	}
 
 	contents ().show ();
@@ -402,12 +401,12 @@ TriggerPage::session_going_away ()
 
 	stop_updating ();
 
-#if 0
-	/* DropReferneces calls RouteUI::self_delete -> CatchDeletion .. */
-	for (list<TriggerStrip*>::iterator i = _strips.begin(); i != _strips.end(); ++i) {
-		delete (*i);
-	}
-#endif
+	/* FIXME: Explicitly deleting strips here triggers RouteUI::self_delete
+	 * via DropReferences → CatchDeletion while the session teardown signal
+	 * chain is still active, causing use-after-free crashes.  Until the
+	 * RouteUI / TriggerStrip lifetime is decoupled from session teardown,
+	 * strips are only removed from the container list (Gtk removes the
+	 * widgets from the layout when it destroys its children). */
 	_selection.clear ();
 	_strips.clear ();
 
@@ -619,14 +618,15 @@ TriggerPage::add_routes (RouteList& rl)
 		if (!std::dynamic_pointer_cast<Track> (*r)) {
 			continue;
 		}
-#if 0
-		/* TODO, only subscribe to PropertyChanged, create (and destroy) TriggerStrip as needed.
-		 * For now we just hide non trigger strips.
-		 */
+		/* FIXME: Lazy strip creation — only subscribe to PropertyChanged here
+		 * and create/destroy TriggerStrip objects on demand instead of
+		 * rebuilding the full list on every track-list change.
+		 * Deferred because it requires reworking the strip-lifecycle
+		 * callbacks throughout redisplay_track_list(). */
 		if (!(*r)->presentation_info ().trigger_track ()) {
-			continue;
+			/* Strip will be hidden by redisplay_track_list(); defer proper
+			 * lazy creation until the FIXME above is addressed. */
 		}
-#endif
 
 		if (!(*r)->triggerbox ()) {
 			/* This Route has no TriggerBox -- and can never have one */
@@ -744,14 +744,12 @@ void
 TriggerPage::stripable_property_changed (PBD::PropertyChange const& what_changed, std::weak_ptr<Stripable> ws)
 {
 	if (what_changed.contains (ARDOUR::Properties::trigger_track)) {
-#if 0
-		std::shared_ptr<Stripable> s = ws.lock ();
-		/* TODO: find trigger-strip for given stripable, delete *it; */
-#else
-		/* For now we just hide it */
+		/* FIXME: When trigger_track visibility changes, ideally find the
+		 * strip for this specific Stripable and show/hide it without
+		 * rebuilding the whole list.  For now we do a full redisplay,
+		 * which is correct but not optimal. */
 		redisplay_track_list ();
 		return;
-#endif
 	}
 	if (what_changed.contains (ARDOUR::Properties::hidden)) {
 		redisplay_track_list ();
@@ -919,18 +917,63 @@ TriggerPage::drop_paths_part_two (std::vector<std::string> paths)
 {
 	/* compare to Editor::drop_paths_part_two */
 	std::vector<string> midi_paths;
-	std::vector<string> audio_paths;
-	for (std::vector<std::string>::iterator s = paths.begin (); s != paths.end (); ++s) {
-		if (SMFSource::safe_midi_file_extension (*s)) {
-			midi_paths.push_back (*s);
-		} else {
-			audio_paths.push_back (*s);
+
+	for (auto const& path : paths) {
+		if (SMFSource::safe_midi_file_extension (path)) {
+			midi_paths.push_back (path);
+			continue;
+		}
+
+		/* Audio: create a new trigger-visible track and load the clip
+		 * directly.  This guarantees trigger_visibility = true so the
+		 * strip appears in the cue editor without relying on the import
+		 * dialog path, which may not set the flag. */
+
+		uint32_t input_chans = 2;
+		{
+			ARDOUR::SoundFileInfo info;
+			std::string err;
+			if (AudioFileSource::get_soundfile_info (path, info, err)) {
+				input_chans = std::max (uint16_t (1), info.channels);
+			}
+		}
+
+		uint32_t output_chans = input_chans;
+		if ((Config->get_output_auto_connect () & AutoConnectMaster) && session ()->master_out ()) {
+			output_chans = session ()->master_out ()->n_inputs ().n_audio ();
+		}
+
+		/* Strip file extension to form the track name */
+		std::string track_name = Glib::path_get_basename (path);
+		std::string::size_type dot = track_name.rfind ('.');
+		if (dot != std::string::npos) {
+			track_name = track_name.substr (0, dot);
+		}
+
+		AudioTrackList atl = session ()->new_audio_track (
+		    input_chans, output_chans,
+		    std::shared_ptr<ARDOUR::RouteGroup> (),
+		    1,
+		    track_name,
+		    PresentationInfo::max_order,
+		    Normal,
+		    true,  /* input_auto_connect */
+		    true); /* trigger_visibility */
+
+		if (!atl.empty ()) {
+			std::shared_ptr<TriggerBox> tb = atl.front ()->triggerbox ();
+			if (tb) {
+				tb->set_from_path (0, path);
+			}
 		}
 	}
-	timepos_t pos (0);
-	Editing::ImportDisposition disposition = Editing::ImportSerializeFiles; // or Editing::ImportDistinctFiles // TODO use drop modifier? config?
-	PublicEditor::instance().do_import (midi_paths, disposition, Editing::ImportAsTrigger, SrcBest, SMFFileAndTrackName, SMFTempoIgnore, pos, _trigger_clip_picker.instrument_plugin ());
-	PublicEditor::instance().do_import (audio_paths, disposition, Editing::ImportAsTrigger, SrcBest, SMFFileAndTrackName, SMFTempoIgnore, pos);
+
+	/* MIDI files are still imported via the standard import path */
+	if (!midi_paths.empty ()) {
+		timepos_t pos (0);
+		Editing::ImportDisposition disposition = Editing::ImportSerializeFiles;
+		PublicEditor::instance ().do_import (midi_paths, disposition, Editing::ImportAsTrigger, SrcBest, SMFFileAndTrackName, SMFTempoIgnore, pos, _trigger_clip_picker.instrument_plugin ());
+	}
 }
 
 bool

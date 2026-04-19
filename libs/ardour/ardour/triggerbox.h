@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2026 Derson Productions <support@dersonproductions.us>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -44,14 +44,18 @@
 #include "evoral/PatchChange.h"
 #include "evoral/SMF.h"
 
+#include "ardour/elastic_stretcher.h"
 #include "ardour/event_ring_buffer.h"
 #include "ardour/midi_model.h"
 #include "ardour/midi_state_tracker.h"
 #include "ardour/processor.h"
 #include "ardour/rt_midibuffer.h"
 #include "ardour/segment_descriptor.h"
+#include "ardour/transient_analysis.h"
 #include "ardour/types.h"
 #include "ardour/types_convert.h"
+#include "ardour/warp_marker.h"
+#include "ardour/warp_mode.h"
 
 #include "ardour/libardour_visibility.h"
 
@@ -200,6 +204,13 @@ class LIBARDOUR_API Trigger : public PBD::Stateful {
 		color_t      color = 0xBEBEBEFF;
 		double       tempo = 0;  //unset
 
+		/* Tempo Warp / Elastic Sync */
+		bool          warp_enabled = false;
+		WarpMode      warp_mode = WarpMode::Complex;
+		WarpMap       warp_map;
+		double        pitch_shift = 0.0; /* semitones, independent of time-stretch */
+		bool          reverse = false;
+
 		UIState() : generation (0) {}
 
 		UIState& operator= (UIState const & other) {
@@ -235,6 +246,12 @@ class LIBARDOUR_API Trigger : public PBD::Stateful {
 			name = other.name;
 			color = other.color;
 			tempo = other.tempo;
+
+			warp_enabled = other.warp_enabled;
+			warp_mode    = other.warp_mode;
+			warp_map     = other.warp_map;
+			pitch_shift  = other.pitch_shift;
+			reverse      = other.reverse;
 
 			return *this;
 		}
@@ -472,8 +489,8 @@ class LIBARDOUR_API Trigger : public PBD::Stateful {
 
 	/* computed from data */
 
-	double                    _estimated_tempo;  //TODO:  this should come from the MIDI file
-	double                    _segment_tempo;  //TODO: this will likely get stored in the SegmentDescriptor for audio triggers
+	double                    _estimated_tempo;  /* for MIDI triggers this should come from the MIDI file */
+	double                    _segment_tempo;  /* for audio triggers this will move into SegmentDescriptor */
 
 	/* basic process is :
 	   1) when a file is loaded, we infer its bpm either by minibpm's estimate, a flag in the filename, metadata (TBD) or other means
@@ -487,12 +504,20 @@ class LIBARDOUR_API Trigger : public PBD::Stateful {
 	double                    _beatcnt;
 	Temporal::Meter           _meter;
 
+	/* Tempo Warp / Elastic Sync — accessible to AudioTrigger */
+	bool     _warp_enabled;
+	WarpMode _warp_mode;
+	WarpMap  _warp_map;
+	double   _pitch_shift; /* semitones, independent of time-stretch */
+	bool     _reverse;     /* reverse playback */
+
 	samplepos_t                expected_end_sample;
 	Temporal::BBT_Offset      _start_quantization;
 	Temporal::BBT_Offset      _nxt_quantization;
 	std::atomic<Trigger*>     _pending;
 	std::atomic<unsigned int>  last_property_generation;
 	PBD::ScopedConnection      region_connection;
+	PBD::ScopedConnection      _analysis_connection;
 
 	void when_stopped_during_run (BufferSet& bufs, pframes_t dest_offset);
 	void set_region_internal (std::shared_ptr<Region>);
@@ -544,6 +569,40 @@ class LIBARDOUR_API AudioTrigger : public Trigger {
 
 	double segment_beatcnt () { return _beatcnt; }
 	void set_segment_beatcnt (double count);
+
+	/* Tempo Warp / Elastic Sync */
+	bool warp_enabled () const { return _warp_enabled; }
+	void set_warp_enabled (bool yn);
+
+	WarpMode warp_mode () const { return _warp_mode; }
+	void set_warp_mode (WarpMode m);
+
+	WarpMap const& warp_map () const { return _warp_map; }
+	void set_warp_map (WarpMap const& m);
+
+	/** Pitch shift in semitones, independent of time-stretching.
+	 *  Range: -24.0 to +24.0.  A value of 0.0 means no pitch shift. */
+	double pitch_shift () const { return _pitch_shift; }
+	void set_pitch_shift (double semitones);
+
+	/** Reverse playback for this clip. */
+	bool is_reversed () const { return _reverse; }
+	void set_reversed (bool yn);
+
+	/** Schedule background transient detection for this clip's audio source.
+	 *  Results will be delivered via TransientAnalysisComplete signal. */
+	void schedule_transient_analysis ();
+
+	/** Auto-place warp markers at detected transients + downbeats.
+	 *  Call after transient analysis is complete.  Replaces any existing markers. */
+	void auto_place_warp_markers ();
+
+	/** Retrieve cached transient positions (in samples) for channel 0.
+	 *  Returns an empty list if analysis is not yet complete. */
+	AnalysisFeatureList get_transients () const;
+
+	/** Emitted (non-RT thread) when transient analysis for this trigger completes. */
+	PBD::Signal<void()> TransientAnalysisComplete;
 
 	void set_legato_offset (timepos_t const &);
 	void set_length (timecnt_t const &);
@@ -606,6 +665,18 @@ class LIBARDOUR_API AudioTrigger : public Trigger {
   private:
 	AudioData         data;
 	RubberBand::RubberBandStretcher*  _stretcher;
+
+	/* Tempo Warp / Elastic Sync — _warp_enabled/_warp_mode/_warp_map are in Trigger protected */
+	ElasticStretcher* _elastic_stretcher;
+
+	/* Pre-allocated pointer arrays for RT warp path (avoid malloc on audio thread) */
+	std::vector<float*> _warp_in_ptrs;
+	std::vector<float*> _warp_out_ptrs;
+
+	/* Transient analysis cache (shared across all triggers in a session) */
+	/* Process-lifetime singleton — intentionally never deleted.
+	 * Allocated once via std::call_once in schedule_transient_analysis(). */
+	static TransientAnalysisCache* _transient_cache;
 
 	/* computed during run */
 

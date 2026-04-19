@@ -1212,6 +1212,11 @@ AudioRegion::state () const
 		child->add_child_nocopy (_inverse_fade_out->get_state ());
 	}
 
+	/* Tempo Warp: save per-region warp markers if any */
+	if (!_warp_map.empty ()) {
+		node.add_child_nocopy (_warp_map.get_state ());
+	}
+
 	return node;
 }
 
@@ -1311,6 +1316,8 @@ AudioRegion::_set_state (const XMLNode& node, int version, PropertyChange& what_
 			if (grandchild) {
 				_inverse_fade_out->set_state (*grandchild, version);
 			}
+		} else if (child->name() == "WarpMap") {
+			_warp_map.set_state (*child, version);
 		}
 	}
 
