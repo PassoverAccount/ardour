@@ -1263,8 +1263,12 @@ AudioClipEditor::compute_chroma_data ()
 		bin_pc[k] = pc;
 	}
 
-	/* Limit analysis to the first 60 s to keep startup latency reasonable */
-	const samplepos_t analysis_end = std::min (total, (samplepos_t)(60 * sr));
+	/* Limit analysis to the first CHROMA_ANALYSIS_MAX_SECONDS seconds of
+	 * audio.  Longer files are truncated to keep startup latency
+	 * acceptable; the chroma strip still gives a representative picture of
+	 * the sample's harmonic content. */
+	static const int CHROMA_ANALYSIS_MAX_SECONDS = 60;
+	const samplepos_t analysis_end = std::min (total, (samplepos_t)(CHROMA_ANALYSIS_MAX_SECONDS * sr));
 
 	std::vector<ARDOUR::Sample> buf (N, 0.f);
 
