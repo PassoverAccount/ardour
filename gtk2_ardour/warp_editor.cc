@@ -39,6 +39,8 @@
 #include "ardour/transient_analysis.h"
 #include "ardour/triggerbox.h"
 
+#include "temporal/tempo.h"
+
 #include "warp_editor.h"
 
 #include "pbd/i18n.h"
@@ -284,6 +286,7 @@ WarpEditor::on_expose_event (GdkEventExpose* /*ev*/)
 	draw_waveform   (cr, w, h);
 	draw_beat_grid  (cr, w, h);
 	draw_transients (cr, w, h);
+	draw_ratio_overlay (cr, w, h);
 	draw_markers    (cr, w, h);
 
 	return true;
@@ -349,6 +352,54 @@ WarpEditor::draw_transients (Cairo::RefPtr<Cairo::Context>& cr, double w, double
 		cr->line_to (x, h * 0.7);
 		cr->stroke ();
 	}
+}
+
+void
+WarpEditor::draw_ratio_overlay (Cairo::RefPtr<Cairo::Context>& cr, double w, double h)
+{
+	if (!_trigger || _working_map.size () < 2) { return; }
+
+	/* Compute the session samples-per-beat.  This lets us call stretch_ratio_at(). */
+	double bpm = 120.0;
+	if (_session) {
+		Temporal::TempoPoint const& tp = Temporal::TempoMap::use()->tempo_at (timepos_t (0));
+		bpm = tp.quarter_notes_per_minute ();
+	}
+	const double sr = _trigger->box ().session ().sample_rate ();
+	const double spb = sr * 60.0 / bpm;
+
+	/* Draw a semi-transparent ratio graph in the lower portion of the editor.
+	 *  ratio=1.0 sits at the bottom; larger ratios go up. Cap display at 2.0. */
+	const double graph_bottom = h;
+	const double graph_height = h * 0.25;
+	const double ratio_max = 2.0;
+
+	cr->set_source_rgba (0.8, 0.4, 0.1, 0.4);
+	cr->set_line_width (1.5);
+
+	bool first = true;
+	for (int px = 0; px < (int) w; ++px) {
+		const double beat = x_to_beat ((double) px);
+		const double ratio = _working_map.stretch_ratio_at (beat, spb);
+		const double clamped = std::min (ratio, ratio_max);
+		const double y = graph_bottom - (clamped / ratio_max) * graph_height;
+
+		if (first) {
+			cr->move_to ((double) px, y);
+			first = false;
+		} else {
+			cr->line_to ((double) px, y);
+		}
+	}
+	cr->stroke ();
+
+	/* Draw a thin baseline at ratio=1.0 */
+	const double base_y = graph_bottom - (1.0 / ratio_max) * graph_height;
+	cr->set_source_rgba (0.6, 0.6, 0.6, 0.3);
+	cr->set_line_width (0.5);
+	cr->move_to (0, base_y);
+	cr->line_to (w, base_y);
+	cr->stroke ();
 }
 
 void

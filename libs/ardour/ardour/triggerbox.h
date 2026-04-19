@@ -209,6 +209,7 @@ class LIBARDOUR_API Trigger : public PBD::Stateful {
 		WarpMode      warp_mode = WarpMode::Complex;
 		WarpMap       warp_map;
 		double        pitch_shift = 0.0; /* semitones, independent of time-stretch */
+		bool          reverse = false;
 
 		UIState() : generation (0) {}
 
@@ -250,6 +251,7 @@ class LIBARDOUR_API Trigger : public PBD::Stateful {
 			warp_mode    = other.warp_mode;
 			warp_map     = other.warp_map;
 			pitch_shift  = other.pitch_shift;
+			reverse      = other.reverse;
 
 			return *this;
 		}
@@ -507,6 +509,7 @@ class LIBARDOUR_API Trigger : public PBD::Stateful {
 	WarpMode _warp_mode;
 	WarpMap  _warp_map;
 	double   _pitch_shift; /* semitones, independent of time-stretch */
+	bool     _reverse;     /* reverse playback */
 
 	samplepos_t                expected_end_sample;
 	Temporal::BBT_Offset      _start_quantization;
@@ -581,6 +584,10 @@ class LIBARDOUR_API AudioTrigger : public Trigger {
 	 *  Range: -24.0 to +24.0.  A value of 0.0 means no pitch shift. */
 	double pitch_shift () const { return _pitch_shift; }
 	void set_pitch_shift (double semitones);
+
+	/** Reverse playback for this clip. */
+	bool is_reversed () const { return _reverse; }
+	void set_reversed (bool yn);
 
 	/** Schedule background transient detection for this clip's audio source.
 	 *  Results will be delivered via TransientAnalysisComplete signal. */

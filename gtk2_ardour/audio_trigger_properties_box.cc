@@ -60,6 +60,7 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	, _abpm_label  (ArdourButton::Text)
 	, _warp_toggle (ArdourButton::led_default_elements)
 	, _warp_edit_button (ArdourButton::Text)
+	, _reverse_toggle (ArdourButton::led_default_elements)
 	, _pitch_adjustment (0.0, -24.0, 24.0, 0.5, 1.0, 0)
 	, _pitch_spinner (_pitch_adjustment)
 	, _ignore_changes (false)
@@ -109,6 +110,37 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	_bars_display.set_alignment (0.0, 0.5);
 	bpm_table->attach (_bars_display, 1, 4, row, row + 1, Gtk::FILL, Gtk::SHRINK);
 
+	/* ------- Separator + Warp section (inside Stretch Options) ------ */
+
+	Gtk::HSeparator* warp_sep = manage (new Gtk::HSeparator ());
+	bpm_table->attach (*warp_sep, 0, 4, row, row + 1, Gtk::FILL, Gtk::SHRINK);
+	row++;
+
+	_warp_toggle.set_text (_("Warp"));
+	bpm_table->attach (_warp_toggle,        0, 1, row, row + 1, Gtk::FILL, Gtk::SHRINK);
+	bpm_table->attach (_warp_mode_selector, 1, 3, row, row + 1, Gtk::FILL, Gtk::SHRINK);
+	_warp_edit_button.set_text (_("Edit Markers"));
+	bpm_table->attach (_warp_edit_button,   3, 4, row, row + 1, Gtk::FILL, Gtk::SHRINK);
+	row++;
+
+	/* Pitch shift row */
+	_pitch_label.set_text (_("Pitch (st):"));
+	_pitch_label.set_alignment (1.0, 0.5);
+	_pitch_spinner.set_digits (1);
+	_pitch_spinner.set_can_focus (false);
+	bpm_table->attach (_pitch_label,   0, 1, row, row + 1, Gtk::FILL, Gtk::SHRINK);
+	bpm_table->attach (_pitch_spinner, 1, 3, row, row + 1, Gtk::FILL, Gtk::SHRINK);
+
+	/* Reverse toggle */
+	_reverse_toggle.set_text (_("Reverse"));
+	bpm_table->attach (_reverse_toggle, 3, 4, row, row + 1, Gtk::FILL, Gtk::SHRINK);
+	row++;
+
+	/* Inline warp editor (waveform + marker view) */
+	bpm_table->attach (_warp_editor, 0, 4, row, row + 1,
+	                    Gtk::EXPAND | Gtk::FILL, Gtk::EXPAND | Gtk::FILL);
+	row++;
+
 	ArdourWidgets::Frame* eTempoBox = manage (new ArdourWidgets::Frame);
 	eTempoBox->set_label(_("Stretch Options"));
 	eTempoBox->set_name("EditorDark");
@@ -116,41 +148,6 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	eTempoBox->add (*bpm_table);
 
 	eTempoBox->show_all();
-
-	/* ------- Tempo Warp / Elastic Sync ----------------------------- */
-	Gtk::Table* warp_table = manage (new Gtk::Table ());
-	warp_table->set_homogeneous (false);
-	warp_table->set_spacings (4);
-	warp_table->set_border_width (8);
-
-	int wrow = 0;
-	_warp_toggle.set_text (_("Warp"));
-	warp_table->attach (_warp_toggle,        0, 1, wrow, wrow + 1, Gtk::FILL, Gtk::SHRINK);
-	warp_table->attach (_warp_mode_selector, 1, 3, wrow, wrow + 1, Gtk::FILL, Gtk::SHRINK);
-	_warp_edit_button.set_text (_("Edit Markers"));
-	warp_table->attach (_warp_edit_button,   3, 4, wrow, wrow + 1, Gtk::FILL, Gtk::SHRINK);
-	wrow++;
-
-	/* Pitch shift row */
-	_pitch_label.set_text (_("Pitch (st):"));
-	_pitch_label.set_alignment (1.0, 0.5);
-	_pitch_spinner.set_digits (1);
-	_pitch_spinner.set_can_focus (false);
-	warp_table->attach (_pitch_label,   0, 1, wrow, wrow + 1, Gtk::FILL, Gtk::SHRINK);
-	warp_table->attach (_pitch_spinner, 1, 3, wrow, wrow + 1, Gtk::FILL, Gtk::SHRINK);
-	wrow++;
-
-	/* Inline warp editor (waveform + marker view) */
-	warp_table->attach (_warp_editor, 0, 4, wrow, wrow + 1,
-	                    Gtk::EXPAND | Gtk::FILL, Gtk::EXPAND | Gtk::FILL);
-	wrow++;
-
-	ArdourWidgets::Frame* eWarpBox = manage (new ArdourWidgets::Frame);
-	eWarpBox->set_label (_("Tempo Warp"));
-	eWarpBox->set_name ("EditorDark");
-	eWarpBox->set_edge_color (0x000000ff);
-	eWarpBox->add (*warp_table);
-	eWarpBox->show_all ();
 
 	/* -------------- Clip start&length (redundant with the trimmer gui handles?)  ----------*/
 	row = 0;
@@ -172,9 +169,8 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	_table.set_border_width (2);
 
 	attach (*eTempoBox,    0,1, 0,1, Gtk::FILL, Gtk::EXPAND | Gtk::FILL);
-	attach (*eWarpBox,     0,1, 1,2, Gtk::FILL, Gtk::EXPAND | Gtk::FILL);
 #if 0
-	attach (_table,        0,1, 2,3, Gtk::FILL, Gtk::SHRINK);
+	attach (_table,        0,1, 1,2, Gtk::FILL, Gtk::SHRINK);
 #endif
 
 	_start_clock.ValueChanged.connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::start_clock_changed));
@@ -211,6 +207,7 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	_warp_toggle.signal_clicked.connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::toggle_warp));
 	_warp_edit_button.signal_clicked.connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::show_warp_editor));
 	_pitch_spinner.signal_changed ().connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::pitch_shift_changed));
+	_reverse_toggle.signal_clicked.connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::toggle_reverse));
 
 	_beat_spinner.set_can_focus(false);
 	_beat_spinner.signal_changed ().connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::beats_changed));
@@ -224,6 +221,7 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	set_tooltip(_warp_mode_selector, _("Select the warp algorithm quality and character"));
 	set_tooltip(_warp_edit_button, _("Open the warp marker editor to add, move and remove markers"));
 	set_tooltip(_pitch_spinner, _("Independent pitch shift in semitones (-24 to +24).  Requires warp to be enabled.  Does not affect timing."));
+	set_tooltip(_reverse_toggle, _("<b>If enabled</b>, playback is reversed for this clip"));
 }
 
 AudioTriggerPropertiesBox::~AudioTriggerPropertiesBox ()
@@ -336,6 +334,9 @@ AudioTriggerPropertiesBox::on_trigger_changed (const PBD::PropertyChange& pc)
 		_pitch_spinner.set_sensitive (at->warp_enabled ());
 		_pitch_adjustment.set_value (at->pitch_shift ());
 
+		/* Sync reverse toggle */
+		_reverse_toggle.set_active (at->is_reversed () ? Gtkmm2ext::ExplicitActive : Gtkmm2ext::Off);
+
 		/* Pass the trigger's raw pointer to the warp editor */
 		_warp_editor.set_trigger (at.get ());
 	}
@@ -416,6 +417,16 @@ AudioTriggerPropertiesBox::pitch_shift_changed ()
 }
 
 void
+AudioTriggerPropertiesBox::toggle_reverse ()
+{
+	TriggerPtr trigger (tref.trigger());
+	std::shared_ptr<AudioTrigger> at = std::dynamic_pointer_cast<AudioTrigger> (trigger);
+	if (at) {
+		at->set_reversed (!at->is_reversed ());
+	}
+}
+
+void
 AudioTriggerPropertiesBox::beats_changed ()
 {
 	if (_ignore_changes) {
@@ -432,11 +443,11 @@ AudioTriggerPropertiesBox::beats_changed ()
 void
 AudioTriggerPropertiesBox::start_clock_changed ()
 {
-	/* XXX do something, probably to the region */
+	/* clock-based start offset editing not used for triggers (handled by trim UI) */
 }
 
 void
 AudioTriggerPropertiesBox::length_clock_changed ()
 {
-	/* XXX do something, probably to the region */
+	/* clock-based length editing not used for triggers (handled by beat spinner) */
 }

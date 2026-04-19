@@ -82,6 +82,7 @@ class WarpEditor : public Gtk::VBox, public ARDOUR::SessionHandlePtr
 	void draw_transients (Cairo::RefPtr<Cairo::Context>&, double w, double h);
 	void draw_beat_grid  (Cairo::RefPtr<Cairo::Context>&, double w, double h);
 	void draw_markers    (Cairo::RefPtr<Cairo::Context>&, double w, double h);
+	void draw_ratio_overlay (Cairo::RefPtr<Cairo::Context>&, double w, double h);
 
 	/* ---- coordinate helpers ---- */
 
