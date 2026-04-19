@@ -49,6 +49,7 @@ ElasticStretcher::ElasticStretcher (double         sample_rate,
 	, _stretcher (nullptr)
 	, _repitch_read_pos (0.0)
 	, _repitch_last_ratio (1.0)
+	, _pitch_shift (0.0)
 	, _xfade_pending (false)
 	, _padding_done (false)
 	, _to_drop (0)
@@ -101,6 +102,13 @@ ElasticStretcher::build_stretcher ()
 	);
 
 	_stretcher->setMaxProcessSize (ES_BLOCKSIZE);
+
+	/* Apply independent pitch shift if set */
+	if (_pitch_shift != 0.0) {
+		const double pitch_scale = pow (2.0, _pitch_shift / 12.0);
+		_stretcher->setPitchScale (pitch_scale);
+	}
+
 	_padding_done = false;
 	_to_drop      = 0;
 }
@@ -157,6 +165,18 @@ ElasticStretcher::set_warp_mode (WarpMode mode)
 		build_stretcher ();
 	}
 	reset ();
+}
+
+void
+ElasticStretcher::set_pitch_shift (double semitones)
+{
+	semitones = max (-24.0, min (24.0, semitones));
+	_pitch_shift = semitones;
+
+	if (_stretcher && _mode != WarpMode::RePitch) {
+		const double pitch_scale = pow (2.0, _pitch_shift / 12.0);
+		_stretcher->setPitchScale (pitch_scale);
+	}
 }
 
 /* ========================================================================

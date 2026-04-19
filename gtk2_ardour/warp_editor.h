@@ -76,6 +76,7 @@ class WarpEditor : public Gtk::VBox, public ARDOUR::SessionHandlePtr
 	bool on_button_release (GdkEventButton*   ev);
 	bool on_motion_notify  (GdkEventMotion*   ev);
 	bool on_scroll_event   (GdkEventScroll*   ev);
+	bool on_key_press      (GdkEventKey*      ev);
 
 	void draw_waveform   (Cairo::RefPtr<Cairo::Context>&, double w, double h);
 	void draw_transients (Cairo::RefPtr<Cairo::Context>&, double w, double h);
@@ -100,6 +101,20 @@ class WarpEditor : public Gtk::VBox, public ARDOUR::SessionHandlePtr
 	void snap_marker_to_transient (int idx);
 	void commit_marker_changes    ();
 
+	/* ---- Undo / Redo ---- */
+	void push_undo ();
+	void undo ();
+	void redo ();
+
+	/* ---- Selection / keyboard marker operations ---- */
+	void select_marker (int idx);
+	void nudge_selected_marker (double beat_delta);
+	void delete_selected_marker ();
+
+	/* ---- Preset save/load ---- */
+	void save_preset ();
+	void load_preset ();
+
 	/* ---- Members ---- */
 	Gtk::DrawingArea       _canvas;
 
@@ -120,9 +135,17 @@ class WarpEditor : public Gtk::VBox, public ARDOUR::SessionHandlePtr
 	double                 _drag_start_x;
 	double                 _drag_last_beat;
 
+	/* Selection state */
+	int                    _selected_marker_idx;
+
 	/* View range */
 	double                 _view_start_beat;
 	double                 _view_end_beat;
+
+	/* Undo / redo stacks (WarpMap snapshots) */
+	std::vector<ARDOUR::WarpMap> _undo_stack;
+	std::vector<ARDOUR::WarpMap> _redo_stack;
+	static const size_t MAX_UNDO_DEPTH = 64;
 
 	/* Horizontal zoom (pixels per beat) — derived from view range */
 	double pixels_per_beat () const;

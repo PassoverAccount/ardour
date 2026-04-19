@@ -260,6 +260,7 @@ Trigger::Trigger (uint32_t n, TriggerBox& b)
 	, _meter (4, 4)
 	, _warp_enabled (false)
 	, _warp_mode (WarpMode::Complex)
+	, _pitch_shift (0.0)
 	, expected_end_sample (0)
 	, _pending (nullptr)
 	, last_property_generation (0)
@@ -389,7 +390,7 @@ Trigger::get_ui_state (Trigger::UIState &state) const
 	state.warp_enabled = _warp_enabled;
 	state.warp_mode    = _warp_mode;
 	state.warp_map     = _warp_map;
-}
+	state.pitch_shift  = _pitch_shift;
 
 void
 Trigger::set_ui_state (Trigger::UIState &state)
@@ -410,7 +411,7 @@ Trigger::set_ui_state (Trigger::UIState &state)
 	_warp_enabled = state.warp_enabled;
 	_warp_mode    = state.warp_mode;
 	_warp_map     = state.warp_map;
-}
+	_pitch_shift  = state.pitch_shift;
 
 void
 Trigger::update_properties ()
@@ -451,11 +452,16 @@ Trigger::update_properties ()
 		/* Tempo Warp / Elastic Sync — applied from UIState */
 		const bool old_warp_enabled = _warp_enabled;
 		const WarpMode old_warp_mode = _warp_mode;
+		const double old_pitch_shift = _pitch_shift;
 		_warp_enabled = ui_state.warp_enabled;
 		_warp_mode    = ui_state.warp_mode;
 		_warp_map     = ui_state.warp_map;
+		_pitch_shift  = ui_state.pitch_shift;
 		if (_warp_enabled != old_warp_enabled || _warp_mode != old_warp_mode) {
 			setup_stretcher ();
+		}
+		if (_pitch_shift != old_pitch_shift && _elastic_stretcher) {
+			_elastic_stretcher->set_pitch_shift (_pitch_shift);
 		}
 
 		/* during construction of a new trigger, the ui_state.name is initialized and queued
@@ -518,6 +524,7 @@ Trigger::copy_to_ui_state ()
 	ui_state.warp_enabled = _warp_enabled;
 	ui_state.warp_mode    = _warp_mode;
 	ui_state.warp_map     = _warp_map;
+	ui_state.pitch_shift  = _pitch_shift;
 }
 
 void
@@ -1662,6 +1669,22 @@ AudioTrigger::set_warp_map (WarpMap const& m)
 }
 
 void
+AudioTrigger::set_pitch_shift (double semitones)
+{
+	semitones = std::max (-24.0, std::min (24.0, semitones));
+	if (_pitch_shift == semitones) {
+		return;
+	}
+	_pitch_shift = semitones;
+	if (_warp_enabled && _elastic_stretcher) {
+		_elastic_stretcher->set_pitch_shift (_pitch_shift);
+	}
+	copy_to_ui_state ();
+	send_property_change (Properties::stretchable);
+	_box.session().set_dirty ();
+}
+
+void
 AudioTrigger::schedule_transient_analysis ()
 {
 	if (!_region) {
@@ -1766,6 +1789,7 @@ AudioTrigger::get_state () const
 
 	node.set_property (X_("warp-enabled"), _warp_enabled);
 	node.set_property (X_("warp-mode"), warp_mode_to_string (_warp_mode));
+	node.set_property (X_("pitch-shift"), _pitch_shift);
 	if (!_warp_map.empty ()) {
 		node.add_child_nocopy (_warp_map.get_state ());
 	}
@@ -1798,6 +1822,10 @@ AudioTrigger::set_state (const XMLNode& node, int version)
 	if (wmap_node) {
 		_warp_map.set_state (*wmap_node, version);
 	}
+
+	double ps = 0.0;
+	node.get_property (X_("pitch-shift"), ps);
+	_pitch_shift = std::max (-24.0, std::min (24.0, ps));
 
 	/* we've changed our internal values; we need to update our queued UIState or they will be lost when UIState is applied */
 	copy_to_ui_state ();
@@ -2086,6 +2114,9 @@ AudioTrigger::setup_stretcher ()
 			    nchans,
 			    _warp_mode,
 			    _warp_map.empty () ? nullptr : &_warp_map);
+			if (_pitch_shift != 0.0) {
+				_elastic_stretcher->set_pitch_shift (_pitch_shift);
+			}
 		}
 	}
 }

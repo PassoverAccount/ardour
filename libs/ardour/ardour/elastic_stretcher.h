@@ -83,6 +83,12 @@ class LIBARDOUR_API ElasticStretcher {
 	 *  Not real-time safe. */
 	void set_warp_mode (WarpMode mode);
 
+	/** Set independent pitch shift in semitones.
+	 *  This adjusts RubberBand's pitch scale without affecting the time ratio.
+	 *  For WarpMode::RePitch this is a no-op — pitch follows playback speed.
+	 *  Range clamped to [-24, +24]. */
+	void set_pitch_shift (double semitones);
+
 	/* ------------------------------------------------------------------ */
 	/** Process @p nframes of output.
 	 *
@@ -134,6 +140,9 @@ class LIBARDOUR_API ElasticStretcher {
 	/* RePitch state */
 	double      _repitch_read_pos;   /* fractional source sample position */
 	double      _repitch_last_ratio; /* cached ratio to detect changes */
+
+	/* Pitch shift (semitones, independent of time-stretch) */
+	double      _pitch_shift;
 
 	/* Loop-crossfade buffer (small, per-channel) */
 	static const pframes_t CROSSFADE_LEN = 256;

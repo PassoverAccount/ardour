@@ -74,6 +74,7 @@ protected:
 	void toggle_warp ();
 	void set_warp_mode (ARDOUR::WarpMode wm);
 	void show_warp_editor ();
+	void pitch_shift_changed ();
 
 private:
 
@@ -107,6 +108,11 @@ private:
 	ArdourWidgets::ArdourButton   _warp_toggle;
 	ArdourWidgets::ArdourDropdown _warp_mode_selector;
 	ArdourWidgets::ArdourButton   _warp_edit_button;
+
+	/* Pitch shift controls */
+	Gtk::Label                    _pitch_label;
+	Gtk::Adjustment               _pitch_adjustment;
+	Gtk::SpinButton               _pitch_spinner;
 
 	WarpEditor _warp_editor;
 

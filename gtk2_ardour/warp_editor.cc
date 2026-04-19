@@ -23,9 +23,15 @@
 #include <ytkmm/menu.h>
 #include <ytkmm/menuitem.h>
 #include <ytkmm/uimanager.h>
+#include <ytkmm/filechooserdialog.h>
+#include <ytkmm/filefilter.h>
+#include <ytkmm/stock.h>
+#include <ydk/gdkkeysyms-compat.h>
 
 #include "gtkmm2ext/gui_thread.h"
 #include "gtkmm2ext/utils.h"
+
+#include "pbd/xml++.h"
 
 #include "ardour/audioregion.h"
 #include "ardour/audiosource.h"
@@ -61,6 +67,7 @@ WarpEditor::WarpEditor ()
 	, _drag_marker_idx (-1)
 	, _drag_start_x (0.0)
 	, _drag_last_beat (0.0)
+	, _selected_marker_idx (-1)
 	, _view_start_beat (0.0)
 	, _view_end_beat (4.0)
 {
@@ -77,6 +84,7 @@ WarpEditor::WarpEditor ()
 	_canvas.signal_button_release_event().connect (sigc::mem_fun (*this, &WarpEditor::on_button_release), false);
 	_canvas.signal_motion_notify_event ().connect (sigc::mem_fun (*this, &WarpEditor::on_motion_notify), false);
 	_canvas.signal_scroll_event        ().connect (sigc::mem_fun (*this, &WarpEditor::on_scroll_event), false);
+	_canvas.signal_key_press_event     ().connect (sigc::mem_fun (*this, &WarpEditor::on_key_press), false);
 
 	pack_start (_canvas, true, true, 0);
 	show_all ();
@@ -101,6 +109,9 @@ WarpEditor::set_trigger (ARDOUR::AudioTrigger* trigger)
 {
 	_connections.drop_connections ();
 	_trigger = trigger;
+	_selected_marker_idx = -1;
+	_undo_stack.clear ();
+	_redo_stack.clear ();
 
 	if (_trigger) {
 		_working_map = _trigger->warp_map ();
@@ -114,6 +125,15 @@ WarpEditor::set_trigger (ARDOUR::AudioTrigger* trigger)
 		_trigger->PropertyChanged.connect (_connections,
 		    invalidator (*this),
 		    [this] (PBD::PropertyChange const&) { invalidate (); },
+		    gui_context ());
+
+		/* Refresh transients when analysis completes */
+		_trigger->TransientAnalysisComplete.connect (_connections,
+		    invalidator (*this),
+		    [this] () {
+			    rebuild_transient_beats ();
+			    invalidate ();
+		    },
 		    gui_context ());
 	} else {
 		_peaks_min.clear ();
@@ -334,14 +354,20 @@ WarpEditor::draw_markers (Cairo::RefPtr<Cairo::Context>& cr, double w, double h)
 		const double x = beat_to_x (markers[i].beat_pos);
 		if (x < -MARKER_HALF_W || x > w + MARKER_HALF_W) { continue; }
 
-		const bool active = dragging && i == _drag_marker_idx;
+		const bool active   = dragging && i == _drag_marker_idx;
+		const bool selected = (!dragging) && i == _selected_marker_idx;
 
 		/* Vertical line through the entire height */
-		cr->set_source_rgba (active ? 1.0 : 0.95,
-		                     active ? 0.8 : 0.65,
-		                     active ? 0.0 : 0.0,
-		                     0.85);
-		cr->set_line_width (active ? 2.0 : 1.0);
+		if (active) {
+			cr->set_source_rgba (1.0, 0.8, 0.0, 0.85);
+			cr->set_line_width (2.0);
+		} else if (selected) {
+			cr->set_source_rgba (0.2, 0.7, 1.0, 0.90);
+			cr->set_line_width (2.0);
+		} else {
+			cr->set_source_rgba (0.95, 0.65, 0.0, 0.85);
+			cr->set_line_width (1.0);
+		}
 		cr->move_to (x, 0);
 		cr->line_to (x, h);
 		cr->stroke ();
@@ -352,9 +378,13 @@ WarpEditor::draw_markers (Cairo::RefPtr<Cairo::Context>& cr, double w, double h)
 		cr->line_to (x + MARKER_HALF_W, 0);
 		cr->line_to (x,                 MARKER_HEIGHT);
 		cr->close_path ();
-		cr->set_source_rgba (active ? 1.0 : 0.95,
-		                     active ? 0.8 : 0.65,
-		                     0.0, 1.0);
+		if (active) {
+			cr->set_source_rgba (1.0, 0.8, 0.0, 1.0);
+		} else if (selected) {
+			cr->set_source_rgba (0.2, 0.7, 1.0, 1.0);
+		} else {
+			cr->set_source_rgba (0.95, 0.65, 0.0, 1.0);
+		}
 		cr->fill ();
 	}
 }
@@ -371,18 +401,25 @@ WarpEditor::on_button_press (GdkEventButton* ev)
 	if (ev->button == 1) {
 		int idx = marker_at_x (ev->x);
 		if (idx >= 0) {
-			/* Start drag */
+			/* Select + start drag */
+			select_marker (idx);
+			push_undo ();
 			_dragging         = true;
 			_drag_marker_idx  = idx;
 			_drag_start_x     = ev->x;
 			_drag_last_beat   = _working_map.markers ()[idx].beat_pos;
 		} else if (ev->type == GDK_2BUTTON_PRESS) {
 			/* Double-click → add marker */
+			push_undo ();
 			add_marker_at_beat (x_to_beat (ev->x));
+		} else {
+			/* Click on empty space → deselect */
+			select_marker (-1);
 		}
 	} else if (ev->button == 3) {
 		int idx = marker_at_x (ev->x);
 		if (idx >= 0) {
+			select_marker (idx);
 			/* Right-click context menu */
 			Gtk::Menu* menu = manage (new Gtk::Menu ());
 			menu->items ().push_back (
@@ -391,6 +428,13 @@ WarpEditor::on_button_press (GdkEventButton* ev)
 			menu->items ().push_back (
 			    Gtk::Menu_Helpers::MenuElem (_("Snap to Nearest Transient"),
 			              sigc::bind (sigc::mem_fun (*this, &WarpEditor::snap_marker_to_transient), idx)));
+			menu->items ().push_back (Gtk::Menu_Helpers::SeparatorElem ());
+			menu->items ().push_back (
+			    Gtk::Menu_Helpers::MenuElem (_("Save Warp Preset..."),
+			              sigc::mem_fun (*this, &WarpEditor::save_preset)));
+			menu->items ().push_back (
+			    Gtk::Menu_Helpers::MenuElem (_("Load Warp Preset..."),
+			              sigc::mem_fun (*this, &WarpEditor::load_preset)));
 			menu->popup (ev->button, ev->time);
 		}
 	}
@@ -478,6 +522,16 @@ WarpEditor::add_marker_at_beat (double beat)
 	/* Compute the corresponding source sample via linear interpolation */
 	const samplepos_t spos = _working_map.source_sample_at (beat);
 	_working_map.add_marker (spos, beat);
+
+	/* Select the newly-added marker */
+	auto const& markers = _working_map.markers ();
+	for (int i = 0; i < (int) markers.size (); ++i) {
+		if (markers[i].beat_pos == beat) {
+			_selected_marker_idx = i;
+			break;
+		}
+	}
+
 	commit_marker_changes ();
 	invalidate ();
 }
@@ -488,7 +542,13 @@ WarpEditor::delete_marker (int idx)
 	auto const& markers = _working_map.markers ();
 	if (idx < 0 || idx >= (int) markers.size ()) { return; }
 
+	push_undo ();
 	_working_map.remove_marker (markers[idx].beat_pos);
+	if (_selected_marker_idx == idx) {
+		_selected_marker_idx = -1;
+	} else if (_selected_marker_idx > idx) {
+		_selected_marker_idx--;
+	}
 	commit_marker_changes ();
 	invalidate ();
 }
@@ -501,6 +561,7 @@ WarpEditor::snap_marker_to_transient (int idx)
 	auto const& markers = _working_map.markers ();
 	if (idx < 0 || idx >= (int) markers.size ()) { return; }
 
+	push_undo ();
 	const double current_beat = markers[idx].beat_pos;
 
 	/* Find the nearest transient beat */
@@ -535,4 +596,248 @@ void
 WarpEditor::invalidate ()
 {
 	_canvas.queue_draw ();
+}
+
+/* ========================================================================
+ * Undo / Redo
+ * ====================================================================== */
+
+void
+WarpEditor::push_undo ()
+{
+	_undo_stack.push_back (_working_map);
+	if (_undo_stack.size () > MAX_UNDO_DEPTH) {
+		_undo_stack.erase (_undo_stack.begin ());
+	}
+	_redo_stack.clear ();
+}
+
+void
+WarpEditor::undo ()
+{
+	if (_undo_stack.empty ()) { return; }
+
+	_redo_stack.push_back (_working_map);
+	_working_map = _undo_stack.back ();
+	_undo_stack.pop_back ();
+	_selected_marker_idx = -1;
+	commit_marker_changes ();
+	invalidate ();
+}
+
+void
+WarpEditor::redo ()
+{
+	if (_redo_stack.empty ()) { return; }
+
+	_undo_stack.push_back (_working_map);
+	_working_map = _redo_stack.back ();
+	_redo_stack.pop_back ();
+	_selected_marker_idx = -1;
+	commit_marker_changes ();
+	invalidate ();
+}
+
+/* ========================================================================
+ * Selection / keyboard marker operations
+ * ====================================================================== */
+
+void
+WarpEditor::select_marker (int idx)
+{
+	if (_selected_marker_idx != idx) {
+		_selected_marker_idx = idx;
+		invalidate ();
+	}
+}
+
+void
+WarpEditor::nudge_selected_marker (double beat_delta)
+{
+	if (_selected_marker_idx < 0) { return; }
+
+	auto const& markers = _working_map.markers ();
+	if (_selected_marker_idx >= (int) markers.size ()) { return; }
+
+	push_undo ();
+	const double old_beat = markers[_selected_marker_idx].beat_pos;
+	const double new_beat = std::max (0.0, old_beat + beat_delta);
+	const samplepos_t spos = markers[_selected_marker_idx].sample_pos;
+
+	_working_map.remove_marker (old_beat);
+	_working_map.add_marker (spos, new_beat);
+
+	/* Re-locate the selection index after the sorted insert */
+	auto const& new_markers = _working_map.markers ();
+	for (int i = 0; i < (int) new_markers.size (); ++i) {
+		if (std::fabs (new_markers[i].beat_pos - new_beat) < 1e-9) {
+			_selected_marker_idx = i;
+			break;
+		}
+	}
+
+	commit_marker_changes ();
+	invalidate ();
+}
+
+void
+WarpEditor::delete_selected_marker ()
+{
+	if (_selected_marker_idx >= 0) {
+		delete_marker (_selected_marker_idx);
+	}
+}
+
+/* ========================================================================
+ * Keyboard handler
+ * ====================================================================== */
+
+bool
+WarpEditor::on_key_press (GdkEventKey* ev)
+{
+	const bool ctrl = (ev->state & GDK_CONTROL_MASK);
+	const bool shift = (ev->state & GDK_SHIFT_MASK);
+
+	switch (ev->keyval) {
+	case GDK_z:
+	case GDK_Z:
+		if (ctrl && shift) {
+			redo ();
+		} else if (ctrl) {
+			undo ();
+		}
+		return true;
+
+	case GDK_y:
+	case GDK_Y:
+		if (ctrl) {
+			redo ();
+		}
+		return true;
+
+	case GDK_Delete:
+	case GDK_BackSpace:
+		delete_selected_marker ();
+		return true;
+
+	case GDK_Insert:
+		/* Add marker at center of visible range */
+		{
+			const double center_beat = (_view_start_beat + _view_end_beat) * 0.5;
+			push_undo ();
+			add_marker_at_beat (center_beat);
+		}
+		return true;
+
+	case GDK_Left:
+		if (_selected_marker_idx >= 0) {
+			nudge_selected_marker (shift ? -0.25 : -0.01);
+		} else {
+			/* Pan left */
+			const double span = _view_end_beat - _view_start_beat;
+			_view_start_beat -= span * 0.05;
+			_view_end_beat   -= span * 0.05;
+			_view_start_beat = std::max (0.0, _view_start_beat);
+			invalidate ();
+		}
+		return true;
+
+	case GDK_Right:
+		if (_selected_marker_idx >= 0) {
+			nudge_selected_marker (shift ? 0.25 : 0.01);
+		} else {
+			/* Pan right */
+			const double span = _view_end_beat - _view_start_beat;
+			_view_start_beat += span * 0.05;
+			_view_end_beat   += span * 0.05;
+			invalidate ();
+		}
+		return true;
+
+	case GDK_Escape:
+		select_marker (-1);
+		return true;
+
+	case GDK_plus:
+	case GDK_equal:
+		/* Zoom in */
+		{
+			const double center = (_view_start_beat + _view_end_beat) * 0.5;
+			const double span = (_view_end_beat - _view_start_beat) * 0.8;
+			_view_start_beat = std::max (0.0, center - span * 0.5);
+			_view_end_beat   = center + span * 0.5;
+			invalidate ();
+		}
+		return true;
+
+	case GDK_minus:
+		/* Zoom out */
+		{
+			const double center = (_view_start_beat + _view_end_beat) * 0.5;
+			const double span = (_view_end_beat - _view_start_beat) * 1.25;
+			_view_start_beat = std::max (0.0, center - span * 0.5);
+			_view_end_beat   = center + span * 0.5;
+			invalidate ();
+		}
+		return true;
+
+	default:
+		break;
+	}
+
+	return false;
+}
+
+/* ========================================================================
+ * Preset save/load
+ * ====================================================================== */
+
+void
+WarpEditor::save_preset ()
+{
+	if (_working_map.empty ()) { return; }
+
+	Gtk::FileChooserDialog dlg (_("Save Warp Preset"), Gtk::FILE_CHOOSER_ACTION_SAVE);
+	dlg.add_button (Gtk::Stock::CANCEL, Gtk::RESPONSE_CANCEL);
+	dlg.add_button (Gtk::Stock::SAVE,   Gtk::RESPONSE_ACCEPT);
+	dlg.set_current_name ("warp-preset.xml");
+
+	Gtk::FileFilter filter;
+	filter.set_name (_("Warp Presets (*.xml)"));
+	filter.add_pattern ("*.xml");
+	dlg.add_filter (filter);
+
+	if (dlg.run () == Gtk::RESPONSE_ACCEPT) {
+		XMLNode& root = _working_map.get_state ();
+		XMLTree tree;
+		tree.set_root (&root);
+		tree.write (dlg.get_filename ());
+	}
+}
+
+void
+WarpEditor::load_preset ()
+{
+	Gtk::FileChooserDialog dlg (_("Load Warp Preset"), Gtk::FILE_CHOOSER_ACTION_OPEN);
+	dlg.add_button (Gtk::Stock::CANCEL, Gtk::RESPONSE_CANCEL);
+	dlg.add_button (Gtk::Stock::OPEN,   Gtk::RESPONSE_ACCEPT);
+
+	Gtk::FileFilter filter;
+	filter.set_name (_("Warp Presets (*.xml)"));
+	filter.add_pattern ("*.xml");
+	dlg.add_filter (filter);
+
+	if (dlg.run () == Gtk::RESPONSE_ACCEPT) {
+		XMLTree tree;
+		if (tree.read (dlg.get_filename ())) {
+			XMLNode const* root = tree.root ();
+			if (root && root->name () == "WarpMap") {
+				push_undo ();
+				_working_map.set_state (*root, 0);
+				_selected_marker_idx = -1;
+				commit_marker_changes ();
+				invalidate ();
+			}
+		}
+	}
 }

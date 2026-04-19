@@ -60,6 +60,8 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	, _abpm_label  (ArdourButton::Text)
 	, _warp_toggle (ArdourButton::led_default_elements)
 	, _warp_edit_button (ArdourButton::Text)
+	, _pitch_adjustment (0.0, -24.0, 24.0, 0.5, 1.0, 0)
+	, _pitch_spinner (_pitch_adjustment)
 	, _ignore_changes (false)
 {
 	Gtk::Label* label;
@@ -127,6 +129,15 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	warp_table->attach (_warp_mode_selector, 1, 3, wrow, wrow + 1, Gtk::FILL, Gtk::SHRINK);
 	_warp_edit_button.set_text (_("Edit Markers"));
 	warp_table->attach (_warp_edit_button,   3, 4, wrow, wrow + 1, Gtk::FILL, Gtk::SHRINK);
+	wrow++;
+
+	/* Pitch shift row */
+	_pitch_label.set_text (_("Pitch (st):"));
+	_pitch_label.set_alignment (1.0, 0.5);
+	_pitch_spinner.set_digits (1);
+	_pitch_spinner.set_can_focus (false);
+	warp_table->attach (_pitch_label,   0, 1, wrow, wrow + 1, Gtk::FILL, Gtk::SHRINK);
+	warp_table->attach (_pitch_spinner, 1, 3, wrow, wrow + 1, Gtk::FILL, Gtk::SHRINK);
 	wrow++;
 
 	/* Inline warp editor (waveform + marker view) */
@@ -199,6 +210,7 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 
 	_warp_toggle.signal_clicked.connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::toggle_warp));
 	_warp_edit_button.signal_clicked.connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::show_warp_editor));
+	_pitch_spinner.signal_changed ().connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::pitch_shift_changed));
 
 	_beat_spinner.set_can_focus(false);
 	_beat_spinner.signal_changed ().connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::beats_changed));
@@ -211,6 +223,7 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	set_tooltip(_warp_toggle, _("<b>If enabled</b>, per-clip warp markers will be used for non-uniform time-stretching that tracks session tempo changes"));
 	set_tooltip(_warp_mode_selector, _("Select the warp algorithm quality and character"));
 	set_tooltip(_warp_edit_button, _("Open the warp marker editor to add, move and remove markers"));
+	set_tooltip(_pitch_spinner, _("Independent pitch shift in semitones (-24 to +24).  Requires warp to be enabled.  Does not affect timing."));
 }
 
 AudioTriggerPropertiesBox::~AudioTriggerPropertiesBox ()
@@ -320,6 +333,8 @@ AudioTriggerPropertiesBox::on_trigger_changed (const PBD::PropertyChange& pc)
 		_warp_mode_selector.set_text (ARDOUR::warp_mode_to_string (at->warp_mode ()));
 		_warp_mode_selector.set_sensitive (at->warp_enabled ());
 		_warp_edit_button.set_sensitive (at->warp_enabled ());
+		_pitch_spinner.set_sensitive (at->warp_enabled ());
+		_pitch_adjustment.set_value (at->pitch_shift ());
 
 		/* Pass the trigger's raw pointer to the warp editor */
 		_warp_editor.set_trigger (at.get ());
@@ -384,6 +399,20 @@ AudioTriggerPropertiesBox::show_warp_editor ()
 {
 	/* Scroll into view / expand the inline warp editor */
 	_warp_editor.show ();
+}
+
+void
+AudioTriggerPropertiesBox::pitch_shift_changed ()
+{
+	if (_ignore_changes) {
+		return;
+	}
+
+	TriggerPtr trigger (tref.trigger());
+	std::shared_ptr<AudioTrigger> at = std::dynamic_pointer_cast<AudioTrigger> (trigger);
+	if (at) {
+		at->set_pitch_shift (_pitch_adjustment.get_value ());
+	}
 }
 
 void
