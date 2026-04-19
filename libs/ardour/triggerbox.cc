@@ -1751,6 +1751,21 @@ AudioTrigger::auto_place_warp_markers ()
 	set_warp_map (new_map);
 }
 
+AnalysisFeatureList
+AudioTrigger::get_transients () const
+{
+	if (!_region || !_transient_cache) {
+		return AnalysisFeatureList ();
+	}
+
+	std::shared_ptr<AudioRegion> ar = std::dynamic_pointer_cast<AudioRegion> (_region);
+	if (!ar) {
+		return AnalysisFeatureList ();
+	}
+
+	return _transient_cache->get_transients (ar->source (0)->id (), 0);
+}
+
 SegmentDescriptor
 AudioTrigger::get_segment_descriptor () const
 {
@@ -2117,6 +2132,9 @@ AudioTrigger::setup_stretcher ()
 			if (_pitch_shift != 0.0) {
 				_elastic_stretcher->set_pitch_shift (_pitch_shift);
 			}
+			/* Pre-allocate RT pointer arrays */
+			_warp_in_ptrs.resize (nchans, nullptr);
+			_warp_out_ptrs.resize (nchans, nullptr);
 		}
 	}
 }
@@ -2279,13 +2297,10 @@ AudioTrigger::audio_run (BufferSet& bufs, samplepos_t start_sample, samplepos_t 
 	if (_warp_enabled && _elastic_stretcher && !_playout) {
 		/* ---- Tempo Warp / Elastic Sync path ---- */
 
-		/* Build per-channel input pointer arrays pointing at raw data */
-		std::vector<float*> in_ptrs  (nchans);
-		std::vector<float*> out_ptrs (nchans);
-
+		/* Use pre-allocated pointer arrays — no heap allocation on the audio thread */
 		for (uint32_t chn = 0; chn < nchans; ++chn) {
-			in_ptrs[chn]  = data[chn % data.size ()];
-			out_ptrs[chn] = bufp[chn];
+			_warp_in_ptrs[chn]  = data[chn % data.size ()];
+			_warp_out_ptrs[chn] = bufp[chn];
 		}
 
 		const double beat_pos = start.get_beats () + (start.get_ticks () / (double) Temporal::ticks_per_beat);
@@ -2293,9 +2308,9 @@ AudioTrigger::audio_run (BufferSet& bufs, samplepos_t start_sample, samplepos_t 
 
 		pframes_t written = _elastic_stretcher->process (
 		    beat_pos, bpm,
-		    in_ptrs.data (), data.length,
+		    _warp_in_ptrs.data (), data.length,
 		    read_index,
-		    nframes, out_ptrs.data (),
+		    nframes, _warp_out_ptrs.data (),
 		    at_end);
 
 		if (in_process_context && written > 0) {

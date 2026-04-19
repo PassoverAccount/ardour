@@ -590,6 +590,10 @@ class LIBARDOUR_API AudioTrigger : public Trigger {
 	 *  Call after transient analysis is complete.  Replaces any existing markers. */
 	void auto_place_warp_markers ();
 
+	/** Retrieve cached transient positions (in samples) for channel 0.
+	 *  Returns an empty list if analysis is not yet complete. */
+	AnalysisFeatureList get_transients () const;
+
 	/** Emitted (non-RT thread) when transient analysis for this trigger completes. */
 	PBD::Signal<void()> TransientAnalysisComplete;
 
@@ -657,6 +661,10 @@ class LIBARDOUR_API AudioTrigger : public Trigger {
 
 	/* Tempo Warp / Elastic Sync — _warp_enabled/_warp_mode/_warp_map are in Trigger protected */
 	ElasticStretcher* _elastic_stretcher;
+
+	/* Pre-allocated pointer arrays for RT warp path (avoid malloc on audio thread) */
+	std::vector<float*> _warp_in_ptrs;
+	std::vector<float*> _warp_out_ptrs;
 
 	/* Transient analysis cache (shared across all triggers in a session) */
 	static TransientAnalysisCache* _transient_cache;

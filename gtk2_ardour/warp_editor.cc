@@ -249,13 +249,20 @@ WarpEditor::rebuild_transient_beats ()
 	const double beat_count = _trigger->segment_beatcnt ();
 	if (beat_count <= 0.0) { return; }
 
-	/* Use the WarpMap to convert from sample positions to beats */
-	const WarpMap& wm = _working_map;
+	const samplecnt_t total = (samplecnt_t) _trigger->data_length ();
+	const double samples_per_beat = (double) total / beat_count;
 
-	/* Retrieve transient sample positions from the analysis cache */
-	/* (stub — in a full implementation this calls TransientAnalysisCache) */
+	if (samples_per_beat <= 0.0) { return; }
 
-	(void) wm;
+	/* Retrieve cached transient positions from the analysis cache */
+	AnalysisFeatureList transients = _trigger->get_transients ();
+
+	for (samplepos_t t : transients) {
+		if (t >= 0 && t < total) {
+			const double beat = (double) t / samples_per_beat;
+			_transient_beats.push_back (beat);
+		}
+	}
 }
 
 /* ========================================================================
