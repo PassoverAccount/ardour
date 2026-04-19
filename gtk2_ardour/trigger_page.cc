@@ -934,7 +934,7 @@ TriggerPage::drop_paths_part_two (std::vector<std::string> paths)
 			ARDOUR::SoundFileInfo info;
 			std::string err;
 			if (AudioFileSource::get_soundfile_info (path, info, err)) {
-				input_chans = std::max ((uint16_t)1u, info.channels);
+				input_chans = std::max (uint16_t (1), info.channels);
 			}
 		}
 
