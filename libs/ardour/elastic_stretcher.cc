@@ -275,7 +275,7 @@ ElasticStretcher::process_stretch (double           beat_pos,
 
 	int    avail        = _stretcher->available ();
 	if (avail < 0) {
-		PBD::error << _("ElasticStretcher: warp processing error — audio stretcher not initialized") << endmsg;
+		PBD::error << _("ElasticStretcher: RubberBand stretcher returned error (available < 0)") << endmsg;
 		return 0;
 	}
 

@@ -674,6 +674,8 @@ class LIBARDOUR_API AudioTrigger : public Trigger {
 	std::vector<float*> _warp_out_ptrs;
 
 	/* Transient analysis cache (shared across all triggers in a session) */
+	/* Process-lifetime singleton — intentionally never deleted.
+	 * Allocated once via std::call_once in schedule_transient_analysis(). */
 	static TransientAnalysisCache* _transient_cache;
 
 	/* computed during run */

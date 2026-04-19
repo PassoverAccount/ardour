@@ -124,7 +124,8 @@ WarpMapTest::serializationTest ()
 		CPPUNIT_ASSERT_DOUBLES_EQUAL (original.markers ()[i].beat_pos, loaded.markers ()[i].beat_pos, 1e-9);
 	}
 
-	delete &xml; /* XMLNode& from get_state() is heap-allocated */
+	/* XMLNode& from get_state() is heap-allocated; caller owns it */
+	delete &xml;
 }
 
 void

@@ -110,7 +110,7 @@ WarpMap::remove_marker (double beat_pos)
 	if (it != _markers.begin ()) {
 		auto prev = it;
 		--prev;
-		if (fabs (prev->beat_pos - beat_pos) < fabs (it->beat_pos - beat_pos)) {
+		if (std::abs (prev->beat_pos - beat_pos) < std::abs (it->beat_pos - beat_pos)) {
 			it = prev;
 		}
 	}
@@ -264,7 +264,9 @@ WarpMap::set_state (XMLNode const& node, int version)
 	 * (we always write it that way), but we sort here defensively to
 	 * maintain the class invariant that _markers is always sorted by
 	 * beat_pos — which is relied upon by the binary-search helpers. */
-	sort (_markers.begin (), _markers.end ());
+	if (!std::is_sorted (_markers.begin (), _markers.end ())) {
+		std::sort (_markers.begin (), _markers.end ());
+	}
 
 	return 0;
 }
