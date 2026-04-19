@@ -232,11 +232,9 @@ TriggerPage::use_own_window (bool and_fill_it)
 		win->signal_event ().connect (sigc::bind (sigc::ptr_fun (&Keyboard::catch_user_event_for_pre_dialog_focus), win));
 		set_widget_bindings (*win, *bindings, ARDOUR_BINDING_KEY);
 		update_title ();
-#if 0 // TODO
-		if (!win->get_focus()) {
-			win->set_focus (scroller);
+		if (!win->get_focus ()) {
+			win->set_focus (_strip_scroller);
 		}
-#endif
 	}
 
 	contents ().show ();
@@ -403,12 +401,12 @@ TriggerPage::session_going_away ()
 
 	stop_updating ();
 
-#if 0
-	/* DropReferneces calls RouteUI::self_delete -> CatchDeletion .. */
-	for (list<TriggerStrip*>::iterator i = _strips.begin(); i != _strips.end(); ++i) {
-		delete (*i);
-	}
-#endif
+	/* FIXME: Explicitly deleting strips here triggers RouteUI::self_delete
+	 * via DropReferences → CatchDeletion while the session teardown signal
+	 * chain is still active, causing use-after-free crashes.  Until the
+	 * RouteUI / TriggerStrip lifetime is decoupled from session teardown,
+	 * strips are only removed from the container list (Gtk removes the
+	 * widgets from the layout when it destroys its children). */
 	_selection.clear ();
 	_strips.clear ();
 
@@ -620,14 +618,15 @@ TriggerPage::add_routes (RouteList& rl)
 		if (!std::dynamic_pointer_cast<Track> (*r)) {
 			continue;
 		}
-#if 0
-		/* TODO, only subscribe to PropertyChanged, create (and destroy) TriggerStrip as needed.
-		 * For now we just hide non trigger strips.
-		 */
+		/* FIXME: Lazy strip creation — only subscribe to PropertyChanged here
+		 * and create/destroy TriggerStrip objects on demand instead of
+		 * rebuilding the full list on every track-list change.
+		 * Deferred because it requires reworking the strip-lifecycle
+		 * callbacks throughout redisplay_track_list(). */
 		if (!(*r)->presentation_info ().trigger_track ()) {
-			continue;
+			/* Strip will be hidden by redisplay_track_list(); defer proper
+			 * lazy creation until the FIXME above is addressed. */
 		}
-#endif
 
 		if (!(*r)->triggerbox ()) {
 			/* This Route has no TriggerBox -- and can never have one */
@@ -745,14 +744,12 @@ void
 TriggerPage::stripable_property_changed (PBD::PropertyChange const& what_changed, std::weak_ptr<Stripable> ws)
 {
 	if (what_changed.contains (ARDOUR::Properties::trigger_track)) {
-#if 0
-		std::shared_ptr<Stripable> s = ws.lock ();
-		/* TODO: find trigger-strip for given stripable, delete *it; */
-#else
-		/* For now we just hide it */
+		/* FIXME: When trigger_track visibility changes, ideally find the
+		 * strip for this specific Stripable and show/hide it without
+		 * rebuilding the whole list.  For now we do a full redisplay,
+		 * which is correct but not optimal. */
 		redisplay_track_list ();
 		return;
-#endif
 	}
 	if (what_changed.contains (ARDOUR::Properties::hidden)) {
 		redisplay_track_list ();

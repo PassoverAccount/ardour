@@ -33,8 +33,6 @@
 
 #include "pbd/xml++.h"
 
-#include "ardour/audioregion.h"
-#include "ardour/audiosource.h"
 #include "ardour/session.h"
 #include "ardour/transient_analysis.h"
 #include "ardour/triggerbox.h"

@@ -169,9 +169,7 @@ AudioTriggerPropertiesBox::AudioTriggerPropertiesBox ()
 	_table.set_border_width (2);
 
 	attach (*eTempoBox,    0,1, 0,1, Gtk::FILL, Gtk::EXPAND | Gtk::FILL);
-#if 0
 	attach (_table,        0,1, 1,2, Gtk::FILL, Gtk::SHRINK);
-#endif
 
 	_start_clock.ValueChanged.connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::start_clock_changed));
 	_length_clock.ValueChanged.connect (sigc::mem_fun (*this, &AudioTriggerPropertiesBox::length_clock_changed));
