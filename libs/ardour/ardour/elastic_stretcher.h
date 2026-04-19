@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2026 Derson Productions <support@dersonproductions.us>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -143,6 +143,11 @@ class LIBARDOUR_API ElasticStretcher {
 	/* Latency book-keeping */
 	bool        _padding_done;
 	samplecnt_t _to_drop;
+
+	/* Pre-allocated RT scratch — avoids heap allocation on the audio thread */
+	std::vector<float*> _in_ptrs;      /* [_nchannels] per-channel input pointers  */
+	std::vector<float>  _discard_buf;  /* [_nchannels * ES_BLOCKSIZE] flat buffer  */
+	std::vector<float*> _discard_ptrs; /* [_nchannels] pointers into _discard_buf  */
 
 	void build_stretcher ();
 	void destroy_stretcher ();

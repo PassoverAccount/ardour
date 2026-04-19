@@ -6,7 +6,7 @@
 *.dylib
 *.pyc
 *.orig
-
+venv/
 # autotools
 aclocal.m4
 config.log

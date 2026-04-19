@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2026 Derson Productions <support@dersonproductions.us>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -58,6 +58,14 @@ ElasticStretcher::ElasticStretcher (double         sample_rate,
 	}
 
 	_xfade_tail.resize (_nchannels, vector<float> (CROSSFADE_LEN, 0.f));
+
+	/* Pre-allocate RT scratch buffers so process() never calls malloc */
+	_in_ptrs.resize (_nchannels, nullptr);
+	_discard_buf.resize (_nchannels * ES_BLOCKSIZE, 0.f);
+	_discard_ptrs.resize (_nchannels, nullptr);
+	for (uint32_t c = 0; c < _nchannels; ++c) {
+		_discard_ptrs[c] = _discard_buf.data () + c * ES_BLOCKSIZE;
+	}
 
 	if (_mode != WarpMode::RePitch) {
 		build_stretcher ();
@@ -247,35 +255,29 @@ ElasticStretcher::process_stretch (double           beat_pos,
 
 	int    avail        = _stretcher->available ();
 	if (avail < 0) {
-		error << _("ElasticStretcher: RubberBand stretcher not initialized. Ensure build_stretcher() was called before processing.") << endmsg;
+		PBD::error << _("ElasticStretcher: RubberBand stretcher not initialized. Ensure build_stretcher() was called before processing.") << endmsg;
 		return 0;
 	}
 
-	/* Feed source audio until we have enough output */
+	/* Feed source audio until we have enough output.
+	 * Use pre-allocated _in_ptrs / _discard_ptrs — no heap allocation on the RT thread. */
 	while ((pframes_t) avail < nframes && read_index < data_length) {
-		pframes_t  chunk    = (pframes_t) min ((samplecnt_t) ES_BLOCKSIZE,
-		                                       data_length - read_index);
-		bool       final    = (read_index + chunk >= data_length) || at_end;
+		pframes_t  chunk = (pframes_t) min ((samplecnt_t) ES_BLOCKSIZE,
+		                                    data_length - read_index);
+		bool       final = (read_index + chunk >= data_length) || at_end;
 
-		/* Build per-channel input pointer array */
-		vector<float*> in (_nchannels);
 		for (uint32_t c = 0; c < _nchannels; ++c) {
-			in[c] = const_cast<float*> (audio_data[c] + read_index);
+			_in_ptrs[c] = const_cast<float*> (audio_data[c] + read_index);
 		}
 
-		_stretcher->process (in.data (), (size_t) chunk, final);
+		_stretcher->process (_in_ptrs.data (), (size_t) chunk, final);
 		read_index += chunk;
 
-		/* Drop RubberBand latency samples on first iteration */
+		/* Drop RubberBand latency samples on first call after reset */
 		if (_to_drop > 0 && (avail = _stretcher->available ()) > 0) {
 			samplecnt_t drop = min ((samplecnt_t) avail, _to_drop);
-			/* retrieve-and-discard */
-			vector<vector<float>> discard_bufs (_nchannels, vector<float> (drop, 0.f));
-			vector<float*>        discard_ptrs (_nchannels);
-			for (uint32_t c = 0; c < _nchannels; ++c) {
-				discard_ptrs[c] = discard_bufs[c].data ();
-			}
-			_stretcher->retrieve (discard_ptrs.data (), (size_t) drop);
+			drop = min (drop, (samplecnt_t) ES_BLOCKSIZE);
+			_stretcher->retrieve (_discard_ptrs.data (), (size_t) drop);
 			_to_drop -= drop;
 		}
 

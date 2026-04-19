@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2026 Derson Productions <support@dersonproductions.us>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -511,6 +511,7 @@ class LIBARDOUR_API Trigger : public PBD::Stateful {
 	std::atomic<Trigger*>     _pending;
 	std::atomic<unsigned int>  last_property_generation;
 	PBD::ScopedConnection      region_connection;
+	PBD::ScopedConnection      _analysis_connection;
 
 	void when_stopped_during_run (BufferSet& bufs, pframes_t dest_offset);
 	void set_region_internal (std::shared_ptr<Region>);

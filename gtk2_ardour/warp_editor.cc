@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Paul Davis <paul@linuxaudiosystems.com>
+ * Copyright (C) 2026 Derson Productions <support@dersonproductions.us>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -386,10 +386,10 @@ WarpEditor::on_button_press (GdkEventButton* ev)
 			/* Right-click context menu */
 			Gtk::Menu* menu = manage (new Gtk::Menu ());
 			menu->items ().push_back (
-			    MenuElem (_("Delete Marker"),
+			    Gtk::Menu_Helpers::MenuElem (_("Delete Marker"),
 			              sigc::bind (sigc::mem_fun (*this, &WarpEditor::delete_marker), idx)));
 			menu->items ().push_back (
-			    MenuElem (_("Snap to Nearest Transient"),
+			    Gtk::Menu_Helpers::MenuElem (_("Snap to Nearest Transient"),
 			              sigc::bind (sigc::mem_fun (*this, &WarpEditor::snap_marker_to_transient), idx)));
 			menu->popup (ev->button, ev->time);
 		}

@@ -21,6 +21,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <vector>
 
@@ -1513,8 +1514,6 @@ AudioTrigger::AudioData::append (Sample const * src, samplecnt_t cnt, uint32_t c
 AudioTrigger::AudioTrigger (uint32_t n, TriggerBox& b)
 	: Trigger (n, b)
 	, _stretcher (nullptr)
-	, _warp_enabled (false)
-	, _warp_mode (WarpMode::Complex)
 	, _elastic_stretcher (nullptr)
 	, read_index (0)
 	, last_readable_sample (0)
@@ -1618,9 +1617,9 @@ AudioTrigger::stretching() const
 
 /* ---- Tempo Warp / Elastic Sync setters --------------------------------- */
 
-/* Shared transient analysis cache — created on first use, lives for the
- * session lifetime. */
+/* Shared transient analysis cache — created once, lives for the process lifetime. */
 TransientAnalysisCache* AudioTrigger::_transient_cache = nullptr;
+static std::once_flag s_transient_cache_once;
 
 void
 AudioTrigger::set_warp_enabled (bool yn)
@@ -1673,24 +1672,31 @@ AudioTrigger::schedule_transient_analysis ()
 		return;
 	}
 
-	if (!_transient_cache) {
+	std::call_once (s_transient_cache_once, [] {
 		_transient_cache = new TransientAnalysisCache ();
+	});
+
+	std::shared_ptr<AudioSource> src =
+	    std::dynamic_pointer_cast<AudioSource> (ar->source (0));
+	if (!src) {
+		return;
 	}
 
 	float sr = (float) _box.session().sample_rate ();
 
-	/* Connect to completion signal — emitted from analysis thread */
+	/* Connect to completion signal — emitted from a non-RT thread.
+	 * Use _analysis_connection (not region_connection) so we do not
+	 * accidentally disconnect the region PropertyChanged listener. */
+	PBD::ID expected_id = src->id ();
 	_transient_cache->AnalysisComplete.connect_same_thread (
-	    region_connection,
-	    [this] (PBD::ID) {
-		    TransientAnalysisComplete (); /* EMIT SIGNAL */
+	    _analysis_connection,
+	    [this, expected_id] (PBD::ID completed_id) {
+		    if (completed_id == expected_id) {
+			    TransientAnalysisComplete (); /* EMIT SIGNAL */
+		    }
 	    });
 
-	std::shared_ptr<AudioSource> src =
-	    std::dynamic_pointer_cast<AudioSource> (ar->source (0));
-	if (src) {
-		_transient_cache->schedule_analysis (src, sr);
-	}
+	_transient_cache->schedule_analysis (src, sr);
 }
 
 void
@@ -2251,7 +2257,7 @@ AudioTrigger::audio_run (BufferSet& bufs, samplepos_t start_sample, samplepos_t 
 			out_ptrs[chn] = bufp[chn];
 		}
 
-		const double beat_pos = start.to_double ();
+		const double beat_pos = start.get_beats () + (start.get_ticks () / (double) Temporal::ticks_per_beat);
 		const bool   at_end   = (read_index >= last_readable_sample);
 
 		pframes_t written = _elastic_stretcher->process (
