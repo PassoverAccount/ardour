@@ -19,7 +19,9 @@
 
 #pragma once
 
+#include <array>
 #include <map>
+#include <vector>
 
 #include <ytkmm/box.h>
 #include <ytkmm/label.h>
@@ -39,6 +41,8 @@
 #include "widgets/ardour_button.h"
 
 #include "canvas/container.h"
+#include "canvas/image.h"
+#include "canvas/item.h"
 #include "canvas/line.h"
 #include "canvas/rectangle.h"
 #include "canvas/ruler.h"
@@ -180,7 +184,26 @@ public:
 	void position_lines ();
 	void scroll_changed ();
 
+	/* Warp-marker overlay — vertical lines in data_group */
+	void rebuild_warp_marker_lines ();
+	void drop_warp_marker_lines ();
+	void trigger_prop_change (PBD::PropertyChange const&);
+
+	/* Chromatic-scale analysis overlay */
+	void compute_chroma_data ();
+	void rebuild_chroma_item ();
+	static const int CHROMA_HEIGHT   = 40;  ///< height of the chroma strip in pixels
+	static const int CHROMA_FFT_SIZE = 4096;
+	static const int CHROMA_HOP      = 1024;
+
 	PBD::ScopedConnection state_connection;
+
+	/* Warp-marker canvas overlay (one Line per marker in data_group) */
+	std::vector<ArdourCanvas::Line*> _warp_marker_lines;
+
+	/* Chromatic-scale analysis overlay */
+	ArdourCanvas::Item*                          _chroma_item;
+	std::vector<std::array<float, 12>>           _chroma_data;    ///< [time_frame][pitch_class 0=C..11=B]
 
 	void build_canvas ();
 	void build_lower_toolbar ();

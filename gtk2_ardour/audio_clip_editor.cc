@@ -19,24 +19,34 @@
 
 #include "pbd/compose.h"
 #include <algorithm>
+#include <array>
+#include <cmath>
+
+#include <fftw3.h>
 
 #include "gtkmm2ext/actions.h"
+#include "gtkmm2ext/colors.h"
 #include "gtkmm2ext/gui_thread.h"
 #include "gtkmm2ext/utils.h"
 
 #include "canvas/canvas.h"
 #include "canvas/debug.h"
+#include "canvas/image.h"
+#include "canvas/item.h"
 #include "canvas/utils.h"
 
 #include "waveview/wave_view.h"
 
 #include "ardour/audioengine.h"
+#include "ardour/audiosource.h"
 #include "ardour/audioregion.h"
 #include "ardour/location.h"
 #include "ardour/profile.h"
 #include "ardour/region_factory.h"
 #include "ardour/session.h"
 #include "ardour/source.h"
+#include "ardour/triggerbox.h"
+#include "ardour/warp_marker.h"
 
 #include "widgets/ardour_button.h"
 #include "widgets/ardour_icon.h"
@@ -67,6 +77,168 @@ using namespace ArdourWidgets;
 using std::max;
 using std::min;
 
+/* ========================================================================
+ * ChromaItem – a canvas item that renders a chromatic-scale heat-map.
+ *
+ * It lives in data_group (which scrolls/zooms with the audio).  It draws
+ * the pre-computed 12-bin chroma features as coloured horizontal bands in
+ * the lower portion of the waveform view.
+ * ====================================================================== */
+namespace {
+
+/* RGB colours for the 12 chromatic pitch classes (C … B) */
+static const uint8_t PC_R[12] = { 0xFF, 0xFF, 0xDD, 0xFF, 0xAA, 0x44, 0x00, 0x00, 0x00, 0x20, 0x88, 0xCC };
+static const uint8_t PC_G[12] = { 0x20, 0x50, 0xBB, 0xAA, 0xCC, 0xCC, 0xCC, 0xAA, 0x44, 0x20, 0x00, 0x00 };
+static const uint8_t PC_B[12] = { 0x20, 0x10, 0x00, 0x00, 0x00, 0x00, 0x44, 0xCC, 0xCC, 0xCC, 0xCC, 0x88 };
+
+class ChromaItem : public ArdourCanvas::Item
+{
+public:
+	ChromaItem (ArdourCanvas::Item* parent)
+	    : ArdourCanvas::Item (parent)
+	    , _hop_samples (1024)
+	    , _spp (1)
+	    , _height (AudioClipEditor::CHROMA_HEIGHT)
+	    , _canvas_width (0)
+	{}
+
+	void set_chroma (std::vector<std::array<float, 12>> const& data, int hop_samples)
+	{
+		begin_change ();
+		_data        = data;
+		_hop_samples = hop_samples;
+		_bounding_box_dirty = true;
+		end_change ();
+	}
+
+	void set_samples_per_pixel (ARDOUR::samplecnt_t spp)
+	{
+		if (spp == _spp) {
+			return;
+		}
+		begin_change ();
+		_spp = spp;
+		/* bounding box width depends on spp */
+		_bounding_box_dirty = true;
+		end_change ();
+	}
+
+	void set_canvas_width (double w)
+	{
+		if (w == _canvas_width) {
+			return;
+		}
+		begin_change ();
+		_canvas_width = w;
+		_bounding_box_dirty = true;
+		end_change ();
+	}
+
+	void set_height (double h)
+	{
+		begin_change ();
+		_height = h;
+		_bounding_box_dirty = true;
+		end_change ();
+	}
+
+	void render (ArdourCanvas::Rect const& area, Cairo::RefPtr<Cairo::Context> cr) const
+	{
+		if (_data.empty () || _spp <= 0 || _height <= 0) {
+			return;
+		}
+
+		/* Clip to the requested area */
+		cr->save ();
+		cr->rectangle (area.x0, area.y0, area.width (), area.height ());
+		cr->clip ();
+
+		const int w = (int)std::ceil (area.width ());
+		const int h = (int)_height;
+		if (w <= 0 || h <= 0) {
+			cr->restore ();
+			return;
+		}
+
+		/* Build a small image surface for this tile and blit it.
+		 *
+		 * 'area' is in window (screen) coordinates; use window_to_item()
+		 * to find the corresponding item-space x value.  Item-space x
+		 * maps directly to source samples: sample = item_x * _spp.
+		 */
+		Cairo::RefPtr<Cairo::ImageSurface> surf =
+		    Cairo::ImageSurface::create (Cairo::FORMAT_ARGB32, w, h);
+
+		surf->flush ();
+		uint8_t* data   = surf->get_data ();
+		const int stride = surf->get_stride ();
+
+		const int row_h = std::max (1, h / 12);
+
+		for (int px = 0; px < w; ++px) {
+			/* Convert window x → item x → source sample → chroma frame */
+			const double window_x = area.x0 + px;
+			const double item_x   = window_to_item (ArdourCanvas::Duple (window_x, 0.0)).x;
+			const samplepos_t samp  = (samplepos_t)(item_x * _spp);
+			const int         frame = (int)(samp / _hop_samples);
+
+			if (frame < 0 || frame >= (int)_data.size ()) {
+				/* no data – draw a faint dark column */
+				for (int py = 0; py < h; ++py) {
+					uint8_t* p = data + py * stride + px * 4;
+					p[0] = p[1] = p[2] = 0;
+					p[3] = 30;
+				}
+				continue;
+			}
+
+			std::array<float, 12> const& chroma = _data[frame];
+
+			for (int pc = 0; pc < 12; ++pc) {
+				const int     y0    = pc * row_h;
+				const int     y1    = std::min (h, y0 + row_h);
+				const uint8_t alpha = (uint8_t)(chroma[pc] * 190);
+
+				for (int py = y0; py < y1; ++py) {
+					/* Cairo ARGB32 on little-endian: byte order is B G R A */
+					uint8_t* p = data + py * stride + px * 4;
+					p[0] = PC_B[pc];
+					p[1] = PC_G[pc];
+					p[2] = PC_R[pc];
+					p[3] = alpha;
+				}
+			}
+		}
+
+		surf->mark_dirty ();
+
+		cr->set_source (surf, area.x0, area.y0);
+		cr->paint ();
+		cr->restore ();
+	}
+
+	void compute_bounding_box () const
+	{
+		if (_data.empty () || _spp <= 0) {
+			_bounding_box = ArdourCanvas::Rect ();
+		} else {
+			const samplecnt_t total_samples = (samplecnt_t)_data.size () * _hop_samples;
+			const double      canvas_w      = (double)total_samples / _spp;
+			_bounding_box = ArdourCanvas::Rect (0, 0, canvas_w, _height);
+		}
+		set_bbox_clean ();
+	}
+
+private:
+	std::vector<std::array<float, 12>> _data;
+	int                                _hop_samples;
+	ARDOUR::samplecnt_t                _spp;
+	double                             _height;
+	double                             _canvas_width;
+};
+
+} // anonymous namespace
+
 void
 AudioClipEditor::ClipMetric::get_marks (std::vector<ArdourCanvas::Ruler::Mark>& marks, int64_t lower, int64_t upper, int maxchars) const
 {
@@ -78,6 +250,7 @@ AudioClipEditor::AudioClipEditor (std::string const & name, bool with_transport)
 	, overlay_text (nullptr)
 	, clip_metric (nullptr)
 	, scroll_fraction (0)
+	, _chroma_item (nullptr)
 {
 	load_bindings ();
 	register_actions ();
@@ -231,6 +404,12 @@ AudioClipEditor::build_canvas ()
 	no_scroll_group->set_position (ArdourCanvas::Duple (_timeline_origin, timebar_height * n_timebars));
 	cursor_scroll_group->set_position (ArdourCanvas::Duple (_timeline_origin, timebar_height * n_timebars));
 	h_scroll_group->set_position (Duple (_timeline_origin, 0.));
+
+	/* Create the chromatic-scale analysis overlay (positioned at canvas
+	 * bottom once a region is loaded). */
+	_chroma_item = new ChromaItem (data_group);
+	CANVAS_DEBUG_NAME (_chroma_item, "audioclip chroma display");
+	_chroma_item->hide (); /* visible only after region load */
 
 	// _playhead_cursor = new EditorCursor (*this, &Editor::canvas_playhead_cursor_event, X_("playhead"));
 	_playhead_cursor = new EditorCursor (*this, X_("playhead"));
@@ -466,6 +645,14 @@ AudioClipEditor::drop_waves ()
 	}
 
 	waves.clear ();
+
+	drop_warp_marker_lines ();
+
+	/* Reset chroma data; the ChromaItem itself is reused and updated */
+	_chroma_data.clear ();
+	if (_chroma_item) {
+		static_cast<ChromaItem*> (_chroma_item)->set_chroma (_chroma_data, CHROMA_HOP);
+	}
 }
 
 void
@@ -532,6 +719,13 @@ AudioClipEditor::set_region (std::shared_ptr<Region> region)
 
 	region->PropertyChanged.connect (state_connection, invalidator (*this), std::bind (&AudioClipEditor::region_changed, this, _1), gui_context ());
 
+	/* Compute chromatic analysis for the newly loaded region and show it */
+	compute_chroma_data ();
+	rebuild_chroma_item ();
+
+	/* Rebuild warp markers if a trigger is already set */
+	rebuild_warp_marker_lines ();
+
 	maybe_set_from_rsu (region->id());
 }
 
@@ -558,6 +752,13 @@ AudioClipEditor::canvas_allocate (Gtk::Allocation& alloc)
 	// loop_line->set_y1 (_visible_canvas_height - 2.);
 
 	set_wave_heights ();
+
+	/* Keep the chroma strip pinned to the bottom of the canvas */
+	if (_chroma_item) {
+		const double chroma_y = std::max (0.0, _visible_canvas_height - CHROMA_HEIGHT);
+		_chroma_item->set_position (ArdourCanvas::Duple (0.0, chroma_y));
+		static_cast<ChromaItem*> (_chroma_item)->set_canvas_width (_visible_canvas_width);
+	}
 
 	catch_pending_show_region ();
 
@@ -641,6 +842,15 @@ AudioClipEditor::set_samples_per_pixel (samplecnt_t spp)
 	for (auto& wave : waves) {
 		wave->set_samples_per_pixel (samples_per_pixel);
 	}
+
+	/* Keep the chroma item in sync with the current zoom level so its
+	 * bounding box and render coordinates stay correct. */
+	if (_chroma_item) {
+		static_cast<ChromaItem*> (_chroma_item)->set_samples_per_pixel (samples_per_pixel);
+	}
+
+	/* Update warp marker line positions after zoom change */
+	rebuild_warp_marker_lines ();
 
 	horizontal_adjustment.set_upper (max_zoom_extent().second.samples() / samples_per_pixel);
 	horizontal_adjustment.set_page_size (current_page_samples()/ samples_per_pixel / 10);
@@ -915,4 +1125,213 @@ AudioClipEditor::instant_save ()
 	RegionUISettings rus;
 	initialize_region_ui_settings (rus);
 	add_region_ui_settings (_region->id(), rus);
+}
+
+/* ========================================================================
+ * Warp-marker overlay
+ * ====================================================================== */
+
+void
+AudioClipEditor::drop_warp_marker_lines ()
+{
+	for (auto* line : _warp_marker_lines) {
+		delete line;
+	}
+	_warp_marker_lines.clear ();
+}
+
+void
+AudioClipEditor::rebuild_warp_marker_lines ()
+{
+	EC_LOCAL_TEMPO_SCOPE;
+
+	drop_warp_marker_lines ();
+
+	TriggerPtr trigger = ref.trigger ();
+	if (!trigger) {
+		return;
+	}
+
+	std::shared_ptr<ARDOUR::AudioTrigger> at =
+	    std::dynamic_pointer_cast<ARDOUR::AudioTrigger> (trigger);
+
+	if (!at || !at->warp_enabled ()) {
+		return;
+	}
+
+	ARDOUR::WarpMap const& wm = at->warp_map ();
+	if (wm.empty ()) {
+		return;
+	}
+
+	/* Use a larger y1 than the canvas height so lines span beyond; the
+	 * canvas clips automatically. */
+	const double y1 = _visible_canvas_height > 0 ? _visible_canvas_height + 2.0 : 4000.0;
+
+	for (auto const& marker : wm.markers ()) {
+		const double x = sample_to_pixel (marker.sample_pos);
+
+		ArdourCanvas::Line* line = new ArdourCanvas::Line (data_group);
+		CANVAS_DEBUG_NAME (line, "warp marker line");
+		line->set (ArdourCanvas::Duple (x, 0.0), ArdourCanvas::Duple (x, y1));
+		/* Orange, 80 % opacity */
+		line->set_outline_color (Gtkmm2ext::rgba_to_color (1.0, 0.55, 0.0, 0.8));
+		line->set_outline_width (1.5f);
+		line->raise_to_top ();
+		_warp_marker_lines.push_back (line);
+	}
+}
+
+void
+AudioClipEditor::trigger_prop_change (PBD::PropertyChange const& what_changed)
+{
+	EC_LOCAL_TEMPO_SCOPE;
+
+	/* Rebuild the warp-marker overlay whenever the warp map is modified.
+	 * The WarpEditor (properties box) emits Properties::stretchable each
+	 * time a marker is added, moved, or removed. */
+	if (what_changed.contains (ARDOUR::Properties::stretchable)) {
+		rebuild_warp_marker_lines ();
+	}
+}
+
+/* ========================================================================
+ * Chromatic-scale analysis overlay
+ * ====================================================================== */
+
+void
+AudioClipEditor::compute_chroma_data ()
+{
+	_chroma_data.clear ();
+
+	if (!_region) {
+		return;
+	}
+
+	std::shared_ptr<AudioRegion> ar =
+	    std::dynamic_pointer_cast<AudioRegion> (_region);
+	if (!ar || ar->n_channels () == 0) {
+		return;
+	}
+
+	std::shared_ptr<AudioSource> asrc =
+	    std::dynamic_pointer_cast<AudioSource> (ar->source (0));
+	if (!asrc) {
+		return;
+	}
+
+	const samplepos_t total = asrc->length ().samples ();
+	if (total <= 0) {
+		return;
+	}
+
+	const float sr = _session ? (float)_session->sample_rate () : 48000.f;
+
+	const int N   = CHROMA_FFT_SIZE;
+	const int HOP = CHROMA_HOP;
+
+	/* Allocate FFTW buffers */
+	float*          fft_in  = (float*)fftwf_malloc (sizeof (float) * N);
+	fftwf_complex*  fft_out = (fftwf_complex*)fftwf_malloc (sizeof (fftwf_complex) * (N / 2 + 1));
+	if (!fft_in || !fft_out) {
+		fftwf_free (fft_in);
+		fftwf_free (fft_out);
+		return;
+	}
+
+	fftwf_plan plan = fftwf_plan_dft_r2c_1d (N, fft_in, fft_out, FFTW_ESTIMATE);
+
+	/* Hann window */
+	std::vector<float> window (N);
+	for (int i = 0; i < N; ++i) {
+		window[i] = 0.5f * (1.f - cosf (2.f * float(M_PI) * i / float(N - 1)));
+	}
+
+	/* Pre-compute which pitch class each FFT bin belongs to.
+	 * Pitch class 0 = C, 1 = C#, …, 11 = B. */
+	std::vector<int> bin_pc (N / 2 + 1, -1);
+	for (int k = 1; k < N / 2 + 1; ++k) {
+		const float freq = (float)k * sr / (float)N;
+		if (freq < 20.f || freq > 20000.f) {
+			continue;
+		}
+		const float midi = 12.f * log2f (freq / 440.f) + 69.f;
+		int pc = (int)roundf (midi) % 12;
+		if (pc < 0) {
+			pc += 12;
+		}
+		bin_pc[k] = pc;
+	}
+
+	/* Limit analysis to the first 60 s to keep startup latency reasonable */
+	const samplepos_t analysis_end = std::min (total, (samplepos_t)(60 * sr));
+
+	std::vector<ARDOUR::Sample> buf (N, 0.f);
+
+	for (samplepos_t pos = 0; pos + N <= analysis_end; pos += HOP) {
+		const samplecnt_t n_read = asrc->read (buf.data (), pos, N, 0);
+		if (n_read < N) {
+			std::fill (buf.begin () + n_read, buf.end (), 0.f);
+		}
+
+		for (int i = 0; i < N; ++i) {
+			fft_in[i] = buf[i] * window[i];
+		}
+
+		fftwf_execute (plan);
+
+		std::array<float, 12> chroma;
+		chroma.fill (0.f);
+
+		for (int k = 1; k < N / 2 + 1; ++k) {
+			const int pc = bin_pc[k];
+			if (pc < 0) {
+				continue;
+			}
+			const float re  = fft_out[k][0];
+			const float im  = fft_out[k][1];
+			chroma[pc] += sqrtf (re * re + im * im);
+		}
+
+		/* Normalise to [0, 1] */
+		const float max_val =
+		    *std::max_element (chroma.begin (), chroma.end ());
+		if (max_val > 0.f) {
+			for (auto& v : chroma) {
+				v /= max_val;
+			}
+		}
+
+		_chroma_data.push_back (chroma);
+	}
+
+	fftwf_destroy_plan (plan);
+	fftwf_free (fft_in);
+	fftwf_free (fft_out);
+}
+
+void
+AudioClipEditor::rebuild_chroma_item ()
+{
+	if (!_chroma_item) {
+		return;
+	}
+
+	ChromaItem* ci = static_cast<ChromaItem*> (_chroma_item);
+
+	if (_chroma_data.empty ()) {
+		ci->hide ();
+		return;
+	}
+
+	ci->set_chroma (_chroma_data, CHROMA_HOP);
+	ci->set_samples_per_pixel (samples_per_pixel);
+	ci->set_height (CHROMA_HEIGHT);
+
+	const double chroma_y =
+	    std::max (0.0, _visible_canvas_height - (double)CHROMA_HEIGHT);
+	ci->set_position (ArdourCanvas::Duple (0.0, chroma_y));
+	ci->show ();
+	/* Raise lines/boundary markers above the chroma strip */
+	line_container->raise_to_top ();
 }

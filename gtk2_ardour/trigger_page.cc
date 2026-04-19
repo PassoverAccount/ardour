@@ -33,6 +33,7 @@
 #include "widgets/ardour_spacer.h"
 
 #include "ardour/audio_track.h"
+#include "ardour/audiofilesource.h"
 #include "ardour/audioregion.h"
 #include "ardour/midi_region.h"
 #include "ardour/midi_track.h"
@@ -919,18 +920,63 @@ TriggerPage::drop_paths_part_two (std::vector<std::string> paths)
 {
 	/* compare to Editor::drop_paths_part_two */
 	std::vector<string> midi_paths;
-	std::vector<string> audio_paths;
-	for (std::vector<std::string>::iterator s = paths.begin (); s != paths.end (); ++s) {
-		if (SMFSource::safe_midi_file_extension (*s)) {
-			midi_paths.push_back (*s);
-		} else {
-			audio_paths.push_back (*s);
+
+	for (auto const& path : paths) {
+		if (SMFSource::safe_midi_file_extension (path)) {
+			midi_paths.push_back (path);
+			continue;
+		}
+
+		/* Audio: create a new trigger-visible track and load the clip
+		 * directly.  This guarantees trigger_visibility = true so the
+		 * strip appears in the cue editor without relying on the import
+		 * dialog path, which may not set the flag. */
+
+		uint32_t input_chans = 2;
+		{
+			ARDOUR::SoundFileInfo info;
+			std::string err;
+			if (AudioFileSource::get_soundfile_info (path, info, err)) {
+				input_chans = std::max ((uint16_t)1u, info.channels);
+			}
+		}
+
+		uint32_t output_chans = input_chans;
+		if ((Config->get_output_auto_connect () & AutoConnectMaster) && session ()->master_out ()) {
+			output_chans = session ()->master_out ()->n_inputs ().n_audio ();
+		}
+
+		/* Strip file extension to form the track name */
+		std::string track_name = Glib::path_get_basename (path);
+		std::string::size_type dot = track_name.rfind ('.');
+		if (dot != std::string::npos) {
+			track_name = track_name.substr (0, dot);
+		}
+
+		AudioTrackList atl = session ()->new_audio_track (
+		    input_chans, output_chans,
+		    std::shared_ptr<ARDOUR::RouteGroup> (),
+		    1,
+		    track_name,
+		    PresentationInfo::max_order,
+		    Normal,
+		    true,  /* input_auto_connect */
+		    true); /* trigger_visibility */
+
+		if (!atl.empty ()) {
+			std::shared_ptr<TriggerBox> tb = atl.front ()->triggerbox ();
+			if (tb) {
+				tb->set_from_path (0, path);
+			}
 		}
 	}
-	timepos_t pos (0);
-	Editing::ImportDisposition disposition = Editing::ImportSerializeFiles; // or Editing::ImportDistinctFiles // TODO use drop modifier? config?
-	PublicEditor::instance().do_import (midi_paths, disposition, Editing::ImportAsTrigger, SrcBest, SMFFileAndTrackName, SMFTempoIgnore, pos, _trigger_clip_picker.instrument_plugin ());
-	PublicEditor::instance().do_import (audio_paths, disposition, Editing::ImportAsTrigger, SrcBest, SMFFileAndTrackName, SMFTempoIgnore, pos);
+
+	/* MIDI files are still imported via the standard import path */
+	if (!midi_paths.empty ()) {
+		timepos_t pos (0);
+		Editing::ImportDisposition disposition = Editing::ImportSerializeFiles;
+		PublicEditor::instance ().do_import (midi_paths, disposition, Editing::ImportAsTrigger, SrcBest, SMFFileAndTrackName, SMFTempoIgnore, pos, _trigger_clip_picker.instrument_plugin ());
+	}
 }
 
 bool
