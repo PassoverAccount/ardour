@@ -489,8 +489,8 @@ class LIBARDOUR_API Trigger : public PBD::Stateful {
 
 	/* computed from data */
 
-	double                    _estimated_tempo;  //TODO:  this should come from the MIDI file
-	double                    _segment_tempo;  //TODO: this will likely get stored in the SegmentDescriptor for audio triggers
+	double                    _estimated_tempo;  /* for MIDI triggers this should come from the MIDI file */
+	double                    _segment_tempo;  /* for audio triggers this will move into SegmentDescriptor */
 
 	/* basic process is :
 	   1) when a file is loaded, we infer its bpm either by minibpm's estimate, a flag in the filename, metadata (TBD) or other means

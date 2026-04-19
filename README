@@ -49,16 +49,35 @@ export LD_LIBRARY_PATH="$libs/tk/ydk-pixbuf:$libs/tk/ztk:$libs/tk/ydk:$libs/tk/y
 ## TODO
 
 - Make BPM selector in top banner click draggable to change session tempo. Requires refactor of existing tempo map code to support real-time changes and per-clip overrides.
-- Add transient snap option to WarpEditor context menu. Requires UI refresh on transient analysis completion, and possibly a visual "pending" state for unsnapped markers.
-- Implement WarpMode::Texture using RubberBandStretcher::OptionProcessRealTime and OptionUseAntiAliasFilter. Requires UI refresh to show texture mode in properties box, and testing to verify real-time performance with typical session sizes.
-- Add keyboard shortcuts for adding/deleting warp markers, and for nudging selected markers left/right. Requires UI focus management to ensure shortcuts only apply when WarpEditor is active, and visual feedback for selected markers.
-- Implement undo/redo for warp marker edits. Requires integration with Ardour's undo system, and careful state management to ensure consistent behavior across multiple edits and session reloads.
 - Add support for MIDI clip warping using a similar marker system. Requires design of a MIDI-specific WarpMap that accounts for note positions and velocities, and integration with the existing MIDI editing workflow.
 - Optimize stretch ratio calculations by caching results for recently used beat positions. Requires implementation of a small LRU cache within WarpMap, and benchmarking to ensure it provides a performance boost without excessive memory usage.
-- Add visual indicators for stretch ratio changes in the WarpEditor, such as color-coding or a ratio graph overlay. Requires UI design work to determine the best way to represent this information without cluttering the interface.
-- Implement support for non-destructive clip warping, allowing users to toggle between warped and original audio without losing edits. Requires changes to the audio processing pipeline to maintain both versions of the audio data, and UI elements to switch between them.
-- Implement individual clip pitch-shifting independent of time-stretching, possibly as an additional WarpMode or as a separate property. Requires changes to the audio processing code to apply pitch shifts without affecting timing, and UI elements to control pitch shift amount.
-- Add warping and pitch-shifting capabilities to the UI's clip properties panel, allowing users to apply these effects without needing to use the WarpEditor. Requires UI design work to integrate these controls into the existing properties panel, and changes to the underlying Trigger code to support applying these effects from the properties panel.
-- The current implementation of the WarpEditor uses a custom Cairo-based widget. Consider refactoring this to use a more standard GTK widget with custom drawing, to improve integration with the rest of the UI and potentially simplify event handling. Requires redesign of the WarpEditor UI to fit within a standard widget, and changes to the drawing code to work within the new widget's framework.
-- Add support for saving and loading warp marker presets, allowing users to apply common warping configurations across multiple clips or sessions. Requires implementation of a preset management system, including UI for saving/loading presets and integration with the existing XML serialization for WarpMaps.
-- Make the clip waveform preview zoomable and scrollable within the WarpEditor, to allow for more precise marker placement. Requires implementation of zoom and scroll functionality within the WarpEditor, and changes to the drawing code to account for the current zoom/scroll state when rendering the waveform and markers.
+
+## Warp / Stretch / Pitch Feature Summary
+
+The following features are fully implemented:
+
+### Stretch Options Panel (gtk2_ardour/)
+- **Stretch toggle** + mode selector (Crisp/Mixed/Smooth) for uniform time-stretch
+- **BPM display** with /2 and x2 tempo multiplier buttons
+- **Beat length** spinner for clip length in beats
+- **Warp toggle** + 6-mode dropdown (Beats/Tones/Texture/RePitch/Complex/ComplexPro)
+- **Edit Markers** button to expand the inline warp editor
+- **Pitch shift** spinner (±24 semitones, 0.5 step) — independent of time-stretch
+- **Reverse toggle** — reversed playback for clips
+- **Inline WarpEditor** — Cairo waveform with draggable markers, beat grid, transient ticks
+
+### WarpEditor Interactions
+- Double-click waveform → add marker
+- Drag markers horizontally → move beat position
+- Right-click → context menu (Delete / Snap to Transient / Save Preset / Load Preset)
+- Keyboard: Insert, Delete, Left/Right (nudge/pan), +/- (zoom), Ctrl+Z/Y (undo/redo)
+- Scroll wheel zoom, arrow-key panning
+- Stretch ratio overlay graph (orange curve with 1.0 baseline)
+
+### Backend (libs/ardour/)
+- **WarpMarker / WarpMap** — sorted (sample_pos, beat_pos) pairs with binary-search, per-segment ratio, XML serialization
+- **WarpMode** enum → RubberBand options mapping; RePitch bypasses RubberBand
+- **ElasticStretcher** — RT-safe wrapper with per-segment ratios, crossfade, independent pitch shift
+- **TransientAnalysisCache** — async transient detection with thread-safe stop flag
+- **Reverse property** on AudioTrigger — persisted in session XML
+- **WarpMap unit tests** — add/remove, ratio, source sample, serialization round-trip, segment lookup
